@@ -3,6 +3,7 @@ from __future__ import annotations
 import sys
 import threading
 import unittest
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import patch
@@ -59,6 +60,16 @@ class ProvisionalDeadlineTests(unittest.TestCase):
             # This regression isolates provisional joins. Final validation has
             # its own bounded scheduler and is not the blocked worker here.
             finder._validate_ranked_pool = lambda *_args, **_kwargs: None  # type: ignore[method-assign]
+            proof_finished = threading.Event()
+            cached_destination_proof = finder._cached_destination_proof
+
+            def tracked_destination_proof(*args, **kwargs):
+                try:
+                    return cached_destination_proof(*args, **kwargs)
+                finally:
+                    proof_finished.set()
+
+            finder._cached_destination_proof = tracked_destination_proof  # type: ignore[method-assign]
             # Leave ample time for the request to start on a loaded runner; the
             # short validation tail still proves that a blocked callback cannot
             # hold the result until the fixture's five-second release timeout.
@@ -81,21 +92,25 @@ class ProvisionalDeadlineTests(unittest.TestCase):
                     self.assertTrue(transport.entered.wait(2.0), "preview validation did not start")
                     self.assertTrue(done.wait(2.0), "search waited for a noncompliant preview transport")
                 self.assertFalse(transport.finished.is_set())
+                self.assertFalse(proof_finished.is_set())
                 if "error" in outcome:
                     raise outcome["error"]
                 report = outcome["report"]
-                self.assertEqual(cache.metadata("proofs"), [])
+                self.assertEqual(list((cache.root / "proofs").glob("*.json")), [])
                 self.assertEqual(report.notes, [
                     "An optional early destination check did not complete; only final eligible results are shown."
                 ])
             finally:
                 transport.release.set()
                 self.assertTrue(transport.finished.wait(2.0))
+                # Wait for the entire detached proof task, including cache and
+                # lease cleanup, before TemporaryDirectory removes its root.
+                self.assertTrue(proof_finished.wait(2.0))
                 worker.join(timeout=0.1)
             self.assertFalse(worker.is_alive())
             # The late worker may complete after `search` returned, but must
             # not turn that old response into durable checked proof evidence.
-            self.assertEqual(cache.metadata("proofs"), [])
+            self.assertEqual(list((cache.root / "proofs").glob("*.json")), [])
 
     def test_failed_optional_preview_is_nonfatal_and_never_relays_exception_text(self):
         class Adapter:
@@ -130,3 +145,70 @@ class ProvisionalDeadlineTests(unittest.TestCase):
         ])
         self.assertNotIn(secret, str(report.to_dict()))
         self.assertNotIn(secret, "\n".join(report.notes))
+
+    def test_exception_after_preview_scheduling_revokes_late_cache_publication(self):
+        class Adapter:
+            def search(self, source, query, limit, context):
+                row = Candidate("one", "PDF forms", "Fill PDF forms", source["id"], "registry", "skills-sh")
+                row.listing_url = "https://skills.sh/one"
+                row.listing_role = "listing"
+                row.source_evidence = {"expected_identity": {"id": "one"}}
+                return [row]
+
+        class BlockedTransport:
+            def __init__(self):
+                self.entered = threading.Event()
+                self.release = threading.Event()
+
+            def request(self, _method, _url, **_kwargs):
+                self.entered.set()
+                self.release.wait(5.0)
+                return AnonymousResponse(200, body=b'{"id":"one"}', connection_address="8.8.8.8")
+
+        with TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            sources = [{
+                "id": source_id, "adapter": "skills-sh", "kind": "registry", "base_url": "https://skills.sh",
+                "effective_enabled": True, "enabled": True, "trust": "community-index",
+            } for source_id in ("a-preview", "b-submit-failure")]
+            transport = BlockedTransport()
+            cache = Cache(root / "cache")
+            finder = UniversalSkillFinder(
+                EffectiveConfig(settings={"max_workers": 1}, packs=[], sources=sources,
+                                overlay_path=root / "sources.json", overlay={}),
+                cache=cache, http=object(), validation_transport=transport,
+                validation_resolver=lambda _host, _port: ("8.8.8.8",),
+            )
+            finder.adapter_map = {"skills-sh": Adapter()}
+            proof_finished = threading.Event()
+            cached_destination_proof = finder._cached_destination_proof
+
+            def tracked_destination_proof(*args, **kwargs):
+                try:
+                    return cached_destination_proof(*args, **kwargs)
+                finally:
+                    proof_finished.set()
+
+            finder._cached_destination_proof = tracked_destination_proof  # type: ignore[method-assign]
+            original_submit = ThreadPoolExecutor.submit
+
+            def fail_second_source_submit(executor, function, *args, **kwargs):
+                if (getattr(executor, "_thread_name_prefix", "") == "skill-source"
+                        and args and args[0].get("id") == "b-submit-failure"):
+                    self.assertTrue(transport.entered.wait(2.0))
+                    raise RuntimeError("controlled source submission failure")
+                return original_submit(executor, function, *args, **kwargs)
+
+            policy = NetworkPolicy(2.0, 3.0, 0.10)
+            try:
+                with patch("universal_skill_finder.federation.NetworkPolicy.for_mode", return_value=policy), \
+                     patch.object(ThreadPoolExecutor, "submit", new=fail_second_source_submit):
+                    with self.assertRaisesRegex(RuntimeError, "controlled source submission failure"):
+                        finder.search("pdf forms")
+                self.assertFalse(proof_finished.is_set())
+                self.assertEqual(list((cache.root / "proofs").glob("*.json")), [])
+            finally:
+                transport.release.set()
+                self.assertTrue(proof_finished.wait(2.0))
+
+            self.assertEqual(list((cache.root / "proofs").glob("*.json")), [])

@@ -11,6 +11,7 @@ First tagged release, superseding the untagged `0.1.0` repository snapshot:
 - Return deterministic ranked cards with source coverage, checked destinations, stable pagination, and explicit inspection or installation actions.
 - Keep raw `SKILL.md` URLs internal to target verification; link cards to separately checked GitHub directories, repository roots, and native source listings.
 - Treat saved reports as untrusted portable data: demote every remote checked-status spelling on load and require fresh validation before links or installer proposals regain authority.
+- Close provisional proof-cache publication at the search's freeze-anchored deadline, and isolate in-process health locks so unrelated sources cannot consume one another's bounded wait.
 - Keep searching read-only; installation remains a separate, approval-gated action.
 - Configure enabled sources, custom repositories, local directories, and declarative source packs without changing connector code.
 - Run with Python 3.10+ and no third-party runtime dependencies.

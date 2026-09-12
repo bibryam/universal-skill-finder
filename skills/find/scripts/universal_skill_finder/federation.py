@@ -13,7 +13,7 @@ from dataclasses import asdict
 from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 from urllib.parse import urlparse
 
 from .adapters import ADAPTER_SPECS, adapters
@@ -57,10 +57,12 @@ class _CutoffCache(Cache):
         super().__init__(root)
         self.cutoff_at = cutoff_at
 
-    def write(self, namespace: str, key: str, payload: Any, *, can_publish: Any = None) -> bool:
+    def write(self, namespace: str, key: str, payload: Any, *, can_publish: Any = None,
+              publish_lock: Any = None) -> bool:
         return super().write(
             namespace, key, payload,
             can_publish=lambda: time.monotonic() < self.cutoff_at and (can_publish is None or can_publish()),
+            publish_lock=publish_lock,
         )
 
 
@@ -74,10 +76,12 @@ class _SourceCache:
     def __getattr__(self, name: str) -> Any:
         return getattr(self._cache, name)
 
-    def write(self, namespace: str, key: str, payload: Any, *, can_publish: Any = None) -> bool:
+    def write(self, namespace: str, key: str, payload: Any, *, can_publish: Any = None,
+              publish_lock: Any = None) -> bool:
         return self._cache.write(
             namespace, key, payload,
             can_publish=lambda: self._can_publish() and (can_publish is None or can_publish()),
+            publish_lock=publish_lock,
         )
 
 
@@ -145,6 +149,8 @@ class UniversalSkillFinder:
     def _cached_destination_proof(
         self, destination: Destination, *, phase: str, budget: RequestBudget,
         permits: PermitPool, deadline: Deadline,
+        can_publish: Callable[[], bool] | None = None,
+        publish_lock: Any = None,
     ):
         """Reuse only an exact, fresh anonymous proof and coalesce its refresh."""
         profile = destination.profile.name if destination.profile is not None else "unreviewed"
@@ -206,7 +212,13 @@ class UniversalSkillFinder:
                     budget=budget, permits=permits, deadline=deadline, phase=phase,
                 )
                 if proof.status in {"eligible", "unavailable"}:
-                    self.cache.write("proofs", key, asdict(proof), can_publish=lambda: deadline.remaining() > 0)
+                    self.cache.write(
+                        "proofs", key, asdict(proof),
+                        can_publish=lambda: deadline.remaining() > 0 and (
+                            can_publish is None or can_publish()
+                        ),
+                        publish_lock=publish_lock,
+                    )
                 return proof
 
     @staticmethod
@@ -766,6 +778,14 @@ class UniversalSkillFinder:
             deadline.started_at, deadline.collection_cutoff_at,
             min(deadline.collection_cutoff_at, deadline.network_deadline_at), 0.0,
         )
+        preview_publication_deadline = provisional_deadline
+        preview_publication_open = threading.Event()
+        preview_publication_open.set()
+        preview_publication_lock = threading.Lock()
+
+        def can_publish_preview() -> bool:
+            return preview_publication_open.is_set() and preview_publication_deadline.remaining() > 0
+
         collection_frozen_at: float | None = None
         supervisor = WorkerSupervisor(deadline)
         validation_budget: Any = RequestBudget(
@@ -791,6 +811,17 @@ class UniversalSkillFinder:
             max_workers=policy.provisional_validation_workers,
             thread_name_prefix="skill-preview",
         ) if provisional_enabled else None
+        preview_executor_closed = False
+
+        def close_preview_publication() -> None:
+            """Revoke cache authority and stop accepting queued preview work."""
+            nonlocal preview_executor_closed
+            with preview_publication_lock:
+                preview_publication_open.clear()
+                should_shutdown = preview_executor is not None and not preview_executor_closed
+                preview_executor_closed = True
+            if should_shutdown:
+                preview_executor.shutdown(wait=False, cancel_futures=True)
 
         def schedule_previews() -> None:
             if preview_executor is None or len(preview_attempted) >= policy.provisional_identities:
@@ -809,6 +840,8 @@ class UniversalSkillFinder:
                 future = preview_executor.submit(
                     self._cached_destination_proof, destination, phase="provisional",
                     budget=validation_budget, permits=validation_permits, deadline=provisional_deadline,
+                    can_publish=can_publish_preview,
+                    publish_lock=preview_publication_lock,
                 )
                 preview_futures[future] = item
                 if len(preview_attempted) >= policy.provisional_identities:
@@ -1094,6 +1127,7 @@ class UniversalSkillFinder:
                     preview and progress_callback is not None and deadline.collection_remaining() > 0
                 ))
 
+            collection_completed = False
             try:
                 fill_available(0)
                 while (active or len(started_ids) < len(runnable)) and deadline.collection_remaining() > 0:
@@ -1103,36 +1137,43 @@ class UniversalSkillFinder:
                     if deadline.collection_remaining() > 0:
                         next_boundary = round_boundaries[current_round] if current_round < len(round_boundaries) else deadline.collection_cutoff_at
                         time.sleep(min(0.01, deadline.collection_remaining(), max(0.0, next_boundary - time.monotonic())))
+                collection_completed = True
             finally:
-                # Freeze first: no completed worker can publish while processes
-                # are being terminated or injected threads finish in the background.
-                if deadline.collection_remaining() <= 0:
-                    for sources in admission_rounds:
-                        for source in sources:
-                            if source["id"] in started_ids:
-                                continue
-                            started_ids.add(source["id"])
-                            outcome = supervisor.submit(SourceJob(source["id"], self._host(source) or source["id"]))
-                            coverage_by_id[source["id"]] = Coverage(
-                                source_id=source["id"], status=outcome.status, detail=outcome.detail,
-                                host=self._host(source), target=self._target(source),
-                                admission_status="not_started_budget", live_status="not_started", incomplete_results=True,
-                            )
-                collection_frozen_at = time.monotonic()
-                supervisor.freeze("collection_cutoff")
-                for item in active.values():
-                    if item["kind"] == "process":
-                        item["handle"].terminate()
-                for item in active.values():
-                    if item["kind"] == "process":
-                        reap_process(item, preempt=False)
-                    else:
-                        item["cancelled"].set()
-                        item["handle"].cancel()
-                # Python cannot safely kill an arbitrary injected thread. It is
-                # detached from the frozen parent and its deadline-aware source
-                # path cannot write the query cache after cutoff.
-                pool.shutdown(wait=False, cancel_futures=True)
+                cleanup_completed = False
+                try:
+                    # Freeze first: no completed worker can publish while processes
+                    # are being terminated or injected threads finish in the background.
+                    if deadline.collection_remaining() <= 0:
+                        for sources in admission_rounds:
+                            for source in sources:
+                                if source["id"] in started_ids:
+                                    continue
+                                started_ids.add(source["id"])
+                                outcome = supervisor.submit(SourceJob(source["id"], self._host(source) or source["id"]))
+                                coverage_by_id[source["id"]] = Coverage(
+                                    source_id=source["id"], status=outcome.status, detail=outcome.detail,
+                                    host=self._host(source), target=self._target(source),
+                                    admission_status="not_started_budget", live_status="not_started", incomplete_results=True,
+                                )
+                    collection_frozen_at = time.monotonic()
+                    supervisor.freeze("collection_cutoff")
+                    for item in active.values():
+                        if item["kind"] == "process":
+                            item["handle"].terminate()
+                    for item in active.values():
+                        if item["kind"] == "process":
+                            reap_process(item, preempt=False)
+                        else:
+                            item["cancelled"].set()
+                            item["handle"].cancel()
+                    # Python cannot safely kill an arbitrary injected thread. It is
+                    # detached from the frozen parent and its deadline-aware source
+                    # path cannot write the query cache after cutoff.
+                    pool.shutdown(wait=False, cancel_futures=True)
+                    cleanup_completed = True
+                finally:
+                    if not collection_completed or not cleanup_completed:
+                        close_preview_publication()
 
         if collection_frozen_at is None:
             collection_frozen_at = time.monotonic()
@@ -1140,21 +1181,28 @@ class UniversalSkillFinder:
             deadline.started_at, deadline.collection_cutoff_at,
             deadline.validation_deadline(collection_frozen_at), deadline.validation_cap_seconds,
         )
+        # When collection finishes before its nominal cutoff, the shorter
+        # final-validation tail becomes the publication boundary for any
+        # provisional worker still in flight.
+        with preview_publication_lock:
+            preview_publication_deadline = final_validation_deadline
         # Production requests are process-bounded. Also bound joins themselves:
         # an injected callback that violates its timeout cannot delay this
         # result or publish late proof/cache state. Such in-process callbacks
         # remain responsible for stopping their own outstanding I/O.
         if preview_executor is not None:
-            for future, item in list(preview_futures.items()):
-                try:
-                    proof = future.result(timeout=final_validation_deadline.remaining())
-                except Exception:
-                    future.cancel()
-                    preview_failures.add(item.id)
-                    continue
-                preview_proofs[item.id] = proof
-            preview_futures.clear()
-            preview_executor.shutdown(wait=False, cancel_futures=True)
+            try:
+                for future, item in list(preview_futures.items()):
+                    try:
+                        proof = future.result(timeout=final_validation_deadline.remaining())
+                    except Exception:
+                        future.cancel()
+                        preview_failures.add(item.id)
+                        continue
+                    preview_proofs[item.id] = proof
+            finally:
+                close_preview_publication()
+                preview_futures.clear()
 
         accepted, outcomes = supervisor.freeze("collection_complete")
         for outcome in outcomes:

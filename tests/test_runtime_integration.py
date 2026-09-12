@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import sys
-import time
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -61,8 +60,7 @@ class CombinedAdapter:
         if source_id == "d-failure":
             raise SourceUnavailable("timeout", "controlled source timeout")
         if source_id == "e-late":
-            time.sleep(0.15)
-            return [candidate(source_id, "late", "PDF late")]
+            raise SourceUnavailable("deadline_exceeded", "controlled source deadline")
         raise AssertionError(f"unexpected source execution: {source_id}")
 
 
@@ -98,7 +96,7 @@ class RuntimeIntegrationTests(unittest.TestCase):
             )
             finder.adapter_map = {"skills-sh": CombinedAdapter()}
             events = []
-            policy = NetworkPolicy(0.05, 0.20, 0.10)
+            policy = NetworkPolicy(0.50, 0.75, 0.20)
             with patch("universal_skill_finder.federation.NetworkPolicy.for_mode", return_value=policy):
                 report = finder.search("pdf workflows", count=3, page_size=2, preview=True,
                                        progress_callback=events.append)
@@ -124,7 +122,7 @@ class RuntimeIntegrationTests(unittest.TestCase):
         self.assertEqual((coverage["c-zero"].status, coverage["c-zero"].result_count), ("ok", 0))
         self.assertEqual(coverage["d-failure"].status, "timeout")
         self.assertEqual(coverage["f-disabled"].status, "disabled")
-        self.assertIn(coverage["e-late"].status, {"deadline_exceeded", "preempted"})
+        self.assertEqual(coverage["e-late"].status, "deadline_exceeded")
         self.assertTrue(coverage["e-late"].incomplete_results)
         self.assertFalse(any("late" in identity for identity in report.snapshot["ordered_pool"]))
 

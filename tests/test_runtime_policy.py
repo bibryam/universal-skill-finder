@@ -219,6 +219,43 @@ class RuntimePolicyTests(unittest.TestCase):
             decision = store.before_request(scope)
             self.assertEqual((decision.status, decision.allowed), ("health_state_unavailable", False))
 
+    def test_unrelated_health_scopes_do_not_share_the_in_process_lock_budget(self):
+        first = HealthScope("first", "search", "v1", "https://first.example")
+        second = HealthScope("second", "search", "v1", "https://second.example")
+        first_entered = threading.Event()
+        release_first = threading.Event()
+
+        class BlockingCache:
+            def read(self, _namespace, _key):
+                return None
+
+            def write(self, _namespace, _key, _value):
+                return True
+
+            @contextmanager
+            def exclusive_lease(self, _namespace, key, **_kwargs):
+                if key == first.key():
+                    first_entered.set()
+                    release_first.wait(1.0)
+                yield True
+
+        store = HealthStore(BlockingCache(), clock=lambda: 10.0)
+        first_result = []
+        worker = threading.Thread(target=lambda: first_result.append(store.before_request(first)))
+        worker.start()
+        try:
+            self.assertTrue(first_entered.wait(0.5))
+            same_scope = store.before_request(first)
+            other_scope = store.before_request(second)
+        finally:
+            release_first.set()
+            worker.join(0.5)
+
+        self.assertFalse(worker.is_alive())
+        self.assertEqual((same_scope.status, same_scope.allowed), ("health_state_unavailable", False))
+        self.assertEqual((other_scope.status, other_scope.allowed), ("closed", True))
+        self.assertEqual((first_result[0].status, first_result[0].allowed), ("closed", True))
+
 
 if __name__ == "__main__":
     unittest.main()
