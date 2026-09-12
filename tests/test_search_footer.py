@@ -20,9 +20,8 @@ from test_presentation import report, result
 
 
 REPOSITORY = "https://github.com/bibryam/universal-skill-finder"
-FOOTER = "[⭐ Star Universal Skill Finder on GitHub](https://github.com/bibryam/universal-skill-finder)"
-PLAIN_FOOTER = "⭐ Star Universal Skill Finder on GitHub (https://github.com/bibryam/universal-skill-finder)"
-UNVERIFIED_FOOTER = "⭐ Star Universal Skill Finder on GitHub (repository link not verified for this report)."
+FOOTER = f"[{REPOSITORY}]({REPOSITORY})"
+PLAIN_FOOTER = REPOSITORY
 
 
 def checked_footer(found):
@@ -38,17 +37,16 @@ class SearchFooterTests(unittest.TestCase):
         lines = text.rstrip("\n").splitlines()
         self.assertEqual(lines[-1], FOOTER)
         self.assertEqual(text.count(FOOTER), 1)
-        self.assertEqual(text.count(REPOSITORY), 1)
         self.assertNotIn("+-- * Universal Skill Finder", text)
         self.assertNotIn("```text", text)
 
     def test_footer_is_last_once_for_each_known_host_and_unknown_host(self):
         for assistant in ("codex", "claude-code", None, "unsupported-host"):
             with self.subTest(assistant=assistant):
-                self.assert_footer(render_markdown(checked_footer(report()), assistant=assistant))
+                self.assert_footer(render_markdown(report(), assistant=assistant))
 
-    def test_eligible_star_cta_is_linked_once_in_markdown_and_plain(self):
-        found = checked_footer(report())
+    def test_canonical_repository_is_linked_once_in_markdown_and_plain(self):
+        found = report()
         markdown = render_report(found, format="markdown")
         plain = render_report(found, format="plain")
         self.assertEqual(markdown.rstrip("\n").splitlines()[-1], FOOTER)
@@ -57,8 +55,8 @@ class SearchFooterTests(unittest.TestCase):
         self.assertEqual(plain.count(REPOSITORY), 1)
 
     def test_footer_follows_warnings_installation_notes_metrics_and_next_action(self):
-        found = checked_footer(report(results=[result(warnings=["Review the requested access"],
-                                      metrics_by_source={"skillsmp": {"stars": 12}})]))
+        found = report(results=[result(warnings=["Review the requested access"],
+                                      metrics_by_source={"skillsmp": {"stars": 12}})])
         text = render_markdown(found, assistant="codex")
         self.assert_footer(text)
         for preceding in ("#1: Review the requested access", "The Inspect and install prompt appears only",
@@ -66,7 +64,7 @@ class SearchFooterTests(unittest.TestCase):
             self.assertLess(text.index(preceding), text.index(FOOTER))
 
     def test_successful_empty_search_has_one_footer_after_no_matches_message(self):
-        text = render_markdown(checked_footer(report(results=[], coverage=[Coverage("empty", "ok", 0)])))
+        text = render_markdown(report(results=[], coverage=[Coverage("empty", "ok", 0)]))
         self.assert_footer(text)
         self.assertLess(text.index("No matches were found"), text.index(FOOTER))
 
@@ -75,29 +73,26 @@ class SearchFooterTests(unittest.TestCase):
         self.assertIn("No sources completed", text)
         self.assertNotIn(FOOTER, text)
 
-    def test_successful_search_keeps_plain_star_reminder_but_omits_unchecked_cta(self):
+    def test_successful_search_uses_canonical_repository_without_report_proof(self):
         found = report()
         text = render_markdown(found)
-        self.assertIn("⭐ Star Universal Skill Finder on GitHub", text)
-        self.assertNotIn("+-- * Universal Skill Finder", text)
-        self.assertNotIn(FOOTER, text)
-        self.assertEqual(text.rstrip("\n").splitlines()[-1], UNVERIFIED_FOOTER)
-        self.assertEqual(text.count(UNVERIFIED_FOOTER), 1)
+        self.assert_footer(text)
 
-    def test_unverified_footer_reminder_is_last_once_in_markdown_and_plain_without_a_url(self):
+    def test_report_proof_cannot_replace_or_suppress_canonical_repository(self):
         for status in ("not_checked", "unavailable", "inconclusive", "reachable"):
             with self.subTest(status=status):
                 found = report()
                 found.footer_link_proof = {
-                    "role": "repository", "url": "https://github.com/bibryam/universal-skill-finder", "status": status,
+                    "role": "repository", "url": "https://evil.example/repository", "status": status,
                 }
-                for format in ("markdown", "plain"):
-                    text = render_report(found, format=format)
-                    self.assertEqual(text.rstrip("\n").splitlines()[-1], UNVERIFIED_FOOTER)
-                    self.assertEqual(text.count(UNVERIFIED_FOOTER), 1)
-                    self.assertNotIn(REPOSITORY, text)
+                markdown = render_report(found, format="markdown")
+                plain = render_report(found, format="plain")
+                self.assertEqual(markdown.rstrip("\n").splitlines()[-1], FOOTER)
+                self.assertEqual(plain.rstrip("\n").splitlines()[-1], PLAIN_FOOTER)
+                self.assertNotIn("evil.example", markdown)
+                self.assertNotIn("evil.example", plain)
 
-    def test_continuation_mapping_keeps_unverified_footer_reminder_without_reviving_a_link(self):
+    def test_continuation_mapping_keeps_canonical_repository_link(self):
         found = {
             "report_format_version": 2,
             "mode": "online",
@@ -111,34 +106,33 @@ class SearchFooterTests(unittest.TestCase):
         for format in ("markdown", "plain"):
             with self.subTest(format=format):
                 text = render_report(found, format=format)
-                self.assertEqual(text.rstrip("\n").splitlines()[-1], UNVERIFIED_FOOTER)
-                self.assertNotIn(REPOSITORY, text)
+                expected = FOOTER if format == "markdown" else PLAIN_FOOTER
+                self.assertEqual(text.rstrip("\n").splitlines()[-1], expected)
 
     def test_no_configured_sources_omits_footer(self):
-        text = render_markdown(checked_footer(report(results=[], coverage=[])))
+        text = render_markdown(report(results=[], coverage=[]))
         self.assertNotIn(FOOTER, text)
 
     def test_dry_run_omits_footer_and_install_command(self):
-        text = render_markdown(checked_footer(report(results=[], coverage=[Coverage("planned", "planned")])),
+        text = render_markdown(report(results=[], coverage=[Coverage("planned", "planned")]),
                                assistant="claude-code", dry_run=True)
         self.assertIn("No sources were searched", text)
         self.assertNotIn(FOOTER, text)
-        self.assertNotIn(UNVERIFIED_FOOTER, text)
+        self.assertNotIn(REPOSITORY, text)
         self.assertNotIn("```sh\nnpx", text)
 
-    def test_offline_preview_omits_star_cta_even_when_a_footer_proof_exists(self):
+    def test_offline_preview_omits_repository_even_when_a_footer_proof_exists(self):
         found = checked_footer(report())
         found.mode = "offline_preview"
         found.results = []
         found.candidate_previews = []
         text = render_report(found)
-        self.assertNotIn("⭐ Star Universal Skill Finder on GitHub", text)
         self.assertNotIn(REPOSITORY, text)
 
-    def test_failed_and_help_output_omit_the_unverified_footer_reminder(self):
+    def test_failed_and_help_output_omit_repository_footer(self):
         failed = render_markdown(report(results=[], coverage=[Coverage("failed", "timeout")]))
-        self.assertNotIn(UNVERIFIED_FOOTER, failed)
-        self.assertNotIn(UNVERIFIED_FOOTER, render_help())
+        self.assertNotIn(REPOSITORY, failed)
+        self.assertNotIn(REPOSITORY, render_help())
 
     def test_cli_json_stays_valid_without_promotional_text_for_every_search_state(self):
         cases = [(report(), [], 0),

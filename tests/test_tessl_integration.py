@@ -110,7 +110,7 @@ class TesslIntegrationTests(unittest.TestCase):
             self.assertNotIn("https://github.com/example/skills", output)
             self.assertNotIn("npx ", output)
             self.assertNotIn("| # | Skill |", output)
-            self.assertNotIn("⭐ Star Universal Skill Finder on GitHub", output)
+            self.assertNotIn("https://github.com/bibryam/universal-skill-finder", output)
 
     def test_failure_does_not_discard_other_sources(self):
         with TemporaryDirectory() as directory:
@@ -155,7 +155,7 @@ class TesslAssessmentTests(unittest.TestCase):
         self.assertIn("not this finder's safety verdict", text)
         self.assertIn("Scores do not change federation ranking", text)
         self.assertIn("### 1. ", text)
-        self.assertNotIn("https://github.com/bibryam/universal-skill-finder", text)
+        self.assertIn("[https://github.com/bibryam/universal-skill-finder](https://github.com/bibryam/universal-skill-finder)", text)
 
     def test_zero_and_none_level_are_distinct_from_missing_assessments(self):
         self.assertIn("quality (raw): 0", metrics_text(self.assessment(tessl_quality=0)))

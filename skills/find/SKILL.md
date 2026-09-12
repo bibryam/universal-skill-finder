@@ -3,7 +3,7 @@ name: find
 description: Find and compare agent skills across enabled registries, GitHub repositories, search indexes, and local directories; list, enable, or disable those sources. Return deterministic pages of verified, provenance-rich skill cards. Use for discovery and source management, never publishing or silently installing code.
 license: MIT
 metadata:
-  version: "0.1.1"
+  version: "0.1.2"
 ---
 
 # Universal Skill Finder
@@ -81,7 +81,7 @@ Preserve the summary counts and all card information using the compact grouping 
 
 Use effective configured `enabled` state independently of availability. In the later coverage table, preserve **Source | Search status | Candidates returned | Shown | Enabled**. `Searched` means completion, including zero matches. `Cached` says the source was not contacted and shows age when known. Failed/unqueried sources use `-`, not a misleading zero. When `coverage.incomplete_results` is true, preserve `Partial search` or `Partial cached`, diagnostics and verified counts. An empty partial response is not evidence of no matches; `--strict` treats it as failure.
 
-Coverage, Notes, inspection fallbacks, and the GitHub CTA may link only through eligible checked proof. Never construct a link from API query parameters, credentials, arbitrary response text, or private paths. Offline preview has no numbered results, links, commands, continuation, or claims of live validation.
+Coverage, Notes, and inspection fallbacks may link only through eligible checked proof. Never construct a link from API query parameters, credentials, arbitrary response text, or private paths. The final repository link is the fixed, application-owned project URL rather than report or source data. Offline preview has no numbered results, links, commands, continuation, or claims of live validation.
 
 **Signals** displays available nonnegative counts with their reporting source: GitHub repository stars, registry stars, installs, downloads, bookmarks, or votes. Preserve zero; missing data is `Not available`. Do not add counts across sources or convert them into quality/safety scores. Generic registry stars are not automatically GitHub stars. GitHub stars describe the entire GitHub repository, not the individual skill; retain observation timestamps and warn that cached counts may be stale. Foreground discovery reads only separately cached GitHub star observations and never starts a decorative metadata request.
 
@@ -89,7 +89,7 @@ Preserve separately labelled Tessl individual-skill assessments: raw quality val
 
 The engine constructs commands only for exact compatible targets whose identity and target proof are both eligible. Missing or ambiguous paths/names/refs, local directories, and registry-only targets without a verified compatible installer require inspection. A generated command is a proposal, not proof that the repository is safe.
 
-Preserve the final single-line **⭐ Star Universal Skill Finder on GitHub** reminder on completed online reports, including continuation pages. Do not add an ASCII frame, logo or code fence. Make the reminder clickable only when its exact repository link proof is eligible; otherwise preserve the generated plain-text reminder and its verification caveat. Do not make extra requests just to activate this optional link. Do not duplicate the footer or add rendered promotional text to JSON, help, source-management output, previews, offline output, or setup failures.
+Preserve the final single-line **[https://github.com/bibryam/universal-skill-finder](https://github.com/bibryam/universal-skill-finder)** link on completed online reports, including continuation pages. This exact canonical URL is application-owned and does not require per-report verification or an extra request. Do not add an ASCII frame, logo, code fence, verification caveat, or alternate label. Do not duplicate the footer or add it to JSON, help, source-management output, previews, offline output, or setup failures.
 
 `--preview` permits at most three early verified, unnumbered mini-previews on stderr while retrieval continues. They have no install command or final-rank claim. `--progress off` suppresses every interim event. `--offline` and `--dry-run` are separate no-live-search modes, not preview aliases.
 

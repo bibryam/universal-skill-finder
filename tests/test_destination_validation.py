@@ -394,11 +394,11 @@ class DestinationValidationTests(unittest.TestCase):
         self.assertIn("https://github.com/owner/repo", called_urls)
         self.assertNotIn("https://github.com/owner/repo/tree/old/skills/humanize", called_urls)
 
-    def test_github_footer_proof_accepts_only_the_exact_repository_page(self):
-        destination = github_repository_destination("footer", repository="bibryam/universal-skill-finder")
-        self.assertEqual(destination.url, "https://github.com/bibryam/universal-skill-finder")
+    def test_github_repository_proof_accepts_only_the_exact_repository_page(self):
+        destination = github_repository_destination("repository", repository="owner/repository")
+        self.assertEqual(destination.url, "https://github.com/owner/repository")
         valid = validate_destination(destination, transport=Transport([
-            AnonymousResponse(200, body=b'<meta name="octolytics-dimension-repository_nwo" content="bibryam/universal-skill-finder">', connection_address="8.8.8.8")]),
+            AnonymousResponse(200, body=b'<meta name="octolytics-dimension-repository_nwo" content="owner/repository">', connection_address="8.8.8.8")]),
             resolver=resolver, budget=Budget(), permits=Permits(), deadline=time.monotonic() + 5)
         self.assertEqual(valid.status, "eligible")
         wrong = validate_destination(destination, transport=Transport([

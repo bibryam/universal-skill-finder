@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+## 0.1.2 - 2026-09-12
+
+- Render the canonical Universal Skill Finder repository URL directly in completed online report footers, without per-report verification or a misleading caveat.
+
 ## 0.1.1 - 2026-09-12
 
 First tagged release, superseding the untagged `0.1.0` repository snapshot:

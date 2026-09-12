@@ -13,6 +13,7 @@ from .text import clean_text, parse_github_repository, safe_skill_path, safe_web
 
 ASSISTANTS = {"codex": "Codex", "claude-code": "Claude Code"}
 SKILLS_CLI_VERSION = "1.5.23"
+PROJECT_REPOSITORY_URL = "https://github.com/bibryam/universal-skill-finder"
 COMPLETED = {"ok", "cached"}
 NOT_SEARCHED = {"disabled", "not_selected", "excluded", "offline_miss", "planned"}
 COUNT_METRICS = (("github_stars", "GitHub repo stars"), ("stars", "stars"), ("installs", "installs"),
@@ -58,6 +59,11 @@ def _link(label: str, url: str) -> str:
         return cell(label)
     destination = quote(url, safe="/:?#@!$&*+,;=%~._-")
     return f"[{cell(label)}]({destination})"
+
+
+def _project_repository_link() -> str:
+    """Render the fixed application-owned repository URL without text sanitization."""
+    return f"[{PROJECT_REPOSITORY_URL}]({PROJECT_REPOSITORY_URL})"
 
 
 def skill_link(result: Result) -> str:
@@ -876,11 +882,7 @@ def _footer(report: object) -> list[str]:
     if not any(str(_value(item, "status", "")).lower() in COMPLETED
                for item in _coverage_rows(report)):
         return []
-    proof = _value(report, "footer_link_proof")
-    url = _proof_url(proof, accepted=_ELIGIBLE) if proof is not None else None
-    if url:
-        return ["", _link("⭐ Star Universal Skill Finder on GitHub", url)]
-    return ["", "⭐ Star Universal Skill Finder on GitHub (repository link not verified for this report)."]
+    return ["", _project_repository_link()]
 
 
 def _summary_data(report: object, results: list[object]) -> dict[str, object]:
@@ -1120,8 +1122,9 @@ def render_report(report: object, *, assistant: str | None = None, format: str =
     mapping, but mappings must come from the report pipeline or from snapshot
     materialization after its proof-demotion/validation boundary. Rendering is
     deliberately not a validator: it performs no I/O, wall-clock freshness
-    decision, or source-origin authentication. It only renders already checked
-    proof roles and keeps all other URL-like source text inert.
+    decision, or source-origin authentication. It renders already checked proof
+    roles plus the fixed application-owned project URL, and keeps all other
+    URL-like source text inert.
     """
     if format not in {"markdown", "plain", "html"}:
         raise ValueError("format must be markdown, plain, or html")
@@ -1353,10 +1356,7 @@ def _html_footer(report: object) -> str:
         str(_value(item, "status", "")).lower() in COMPLETED for item in _coverage_rows(report)
     ):
         return ""
-    proof = _value(report, "footer_link_proof")
-    url = _proof_url(proof, accepted=_ELIGIBLE) if proof is not None else None
-    action = _html_link("⭐ Star Universal Skill Finder on GitHub", url) if url else "⭐ Star Universal Skill Finder on GitHub (repository link not verified for this report)."
-    return "<footer>" + action + "</footer>"
+    return "<footer>" + _html_link(PROJECT_REPOSITORY_URL, PROJECT_REPOSITORY_URL) + "</footer>"
 
 
 def _html_summary_header(report: object, results: list[object], summary: Mapping[str, object]) -> str:
@@ -1427,6 +1427,8 @@ def render_html_report(report: object, *, assistant: str | None = None, dry_run:
 def _plain(lines: list[str]) -> str:
     """Plain-text view retaining the Markdown field order without markup or ANSI."""
     def replace_link(match: re.Match[str]) -> str:
+        if match.group(1) == match.group(2):
+            return match.group(1)
         return f"{match.group(1)} ({match.group(2)})"
 
     text = "\n".join(lines)

@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
-VERSION = "0.1.1"
+VERSION = "0.1.2"
 # Source-list, overlay and source-pack JSON retain their v1 shapes. Search
 # reports deliberately use their own v2 envelope below.
 SCHEMA_VERSION = 1
