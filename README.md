@@ -43,7 +43,7 @@ These are shipped defaults. Ask **List sources** to see your settings. Each sear
 
 ## Install
 
-Searching requires **Python 3.10+ with SSL** and a coding agent that supports skills and can run local commands. There are no third-party Python packages to install. The [Skills CLI](https://github.com/vercel-labs/skills#install-a-skill) installer also needs Node.js 22.20.0+, `npx`, and Git.
+Searching requires **Python 3.10+ with SSL** and a coding agent that supports skills and can run local commands. There are no third-party Python packages to install. The [tested Skills CLI 1.5.23](https://github.com/vercel-labs/skills/tree/v1.5.23#install-a-skill) installer also needs Node.js 22.20.0+, `npx`, and Git.
 
 Choose the standalone skill or the native plugin to avoid duplicate entries.
 
@@ -64,10 +64,12 @@ codex plugin add skill@skill
 **Install from GitHub**
 
 ```bash
-npx skills add bibryam/universal-skill-finder --skill find --global
+npx skills@1.5.23 add bibryam/universal-skill-finder --skill find --global
 ```
 
-Choose your agents in the installer, then start a new session. Leave off `--global` for a project installation. Add `--agent codex`, `--agent claude-code`, another [supported agent](https://github.com/vercel-labs/skills#supported-agents), or `--agent '*'` for all. See [installation and updates](docs/installation.md) for local plugins, manual installation without Node.js, Windows instructions, and removal.
+This pins the separately maintained Skills CLI version tested with this project. Skills CLI 1.5.23 sends anonymous usage telemetry and requests security-audit data for confirmed-public GitHub repositories by default. Set `DISABLE_TELEMETRY=1` or `DO_NOT_TRACK=1` to disable both; Universal Skill Finder itself has no telemetry.
+
+Choose your agents in the installer, then start a new session. Leave off `--global` for a project installation. Add `--agent codex`, `--agent claude-code`, another [supported agent](https://github.com/vercel-labs/skills/tree/v1.5.23#supported-agents), or `--agent '*'` for all. See [installation and updates](docs/installation.md) for local plugins, manual installation without Node.js, Windows instructions, and removal.
 
 ## Use it
 
@@ -91,7 +93,7 @@ In other agents, ask “Use Universal Skill Finder to find skills for PDF forms�
 
 Reports stay in your terminal or agent conversation. They start with one short summary, then scan-first cards; detailed counts, warnings and source coverage follow below. Each card keeps up to 400 characters of description, combines repository and skill folder into one Location, and offers numbered inspection or installation actions instead of repeating a long command. Markdown keeps bold headings and labels. Direct CLI output adds color on supported interactive terminals; `NO_COLOR` disables it, and saved or redirected output has no ANSI codes. A browser report is available only if you explicitly ask for HTML.
 
-Links appear only after the destination identity is checked. Installation commands require stronger exact-target evidence. “Found” counts unique candidates, not guaranteed install-ready skills.
+Links appear only after the displayed destination identity is checked. A skill heading and Location open a browsable GitHub skill directory when one is verified; **Found on** opens each verified native registry listing. The raw `SKILL.md` URL is content evidence for verification and installation, not a browsing destination. Installation commands require stronger exact-target evidence. “Found” counts unique candidates, not guaranteed install-ready skills.
 
 An abbreviated example, not a live result:
 
@@ -124,7 +126,7 @@ Say **“Next page”** or **“Show more”** to continue the saved search with
 
 Signals are source-labelled snapshots. Missing values appear as **Not available**. GitHub stars describe the whole repository; search uses only already cached repository metadata and never waits for a foreground star lookup. Popularity and Tessl assessments do not certify quality or safety.
 
-If Universal Skill Finder cannot generate an install command, it links to the exact skill directory, repository, or listing and explains why.
+If Universal Skill Finder cannot generate an install command, it links to a checked GitHub skill directory, repository root, or native source listing and explains why. It never substitutes a raw file URL for a browsing link.
 
 Universal Skill Finder checks standard local skill directories to label installed matches and name collisions without uploading their contents. This does not add those folders as search sources. Ask it to **skip the installed-skill check** to opt out.
 

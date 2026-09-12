@@ -2,11 +2,15 @@
 
 ## Unreleased
 
-Initial public release:
+## 0.1.1 - 2026-09-12
+
+First tagged release, superseding the untagged `0.1.0` repository snapshot:
 
 - Search 13 bundled registries, repositories, and indexes through one `find` skill.
 - Install as a standalone skill or as the `skill@skill` native plugin for Claude Code and Codex.
 - Return deterministic ranked cards with source coverage, checked destinations, stable pagination, and explicit inspection or installation actions.
+- Keep raw `SKILL.md` URLs internal to target verification; link cards to separately checked GitHub directories, repository roots, and native source listings.
+- Treat saved reports as untrusted portable data: demote every remote checked-status spelling on load and require fresh validation before links or installer proposals regain authority.
 - Keep searching read-only; installation remains a separate, approval-gated action.
 - Configure enabled sources, custom repositories, local directories, and declarative source packs without changing connector code.
 - Run with Python 3.10+ and no third-party runtime dependencies.

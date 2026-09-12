@@ -189,7 +189,7 @@ class SourceTerminologyTests(unittest.TestCase):
         self.assertIn("[Open checked destination](https://catalog.example/pdf)", markdown)
         repository = render_markdown(report(results=[result(ref=None)]), assistant="codex")
         self.assertIn("exact skill target proof is missing", repository)
-        self.assertNotIn("[Open checked destination]", repository)
+        self.assertIn("[Open checked destination](https://github.com/anthropics/skills)", repository)
 
     def test_remote_description_and_machine_identifiers_are_not_rewritten(self):
         row = result(description="Compare database sources", source_ids=["database-source"],

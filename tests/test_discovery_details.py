@@ -18,6 +18,9 @@ from test_search_defaults import default_search_fixture
 class DiscoveryDetailsTests(unittest.TestCase):
     def test_uninstallable_result_links_repository_not_just_registry_listing(self):
         row = result(skill_path=None, ref=None, canonical_url="https://registry.example/pdf")
+        row.link_proofs = [{
+            "role": "repository", "url": "https://github.com/anthropics/skills", "status": "eligible",
+        }]
         text = installation_fallback(row, "skill directory unresolved")
         self.assertIn("[Open repository](https://github.com/anthropics/skills)", text)
         self.assertNotIn("registry.example", text)

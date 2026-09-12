@@ -34,10 +34,16 @@ MAX_REPORT_METADATA_BYTES = 256 * 1024
 _ID = re.compile(r"[a-f0-9]{32}")
 _PROOF_MAX_AGE_SECONDS = 300
 _LOCAL_PROOF_BASES = frozenset({"local_relative_path_content_sha256"})
+_PORTABLE_ACTIONABLE_STATUSES = frozenset({"eligible", "verified", "reachable"})
 
 
 class SnapshotError(ValueError):
     pass
+
+
+def _is_portable_actionable_status(value: object) -> bool:
+    """Demote canonical and legacy actionable spellings in portable data."""
+    return isinstance(value, str) and value.lower() in _PORTABLE_ACTIONABLE_STATUSES
 
 
 def _proof_time(value: object) -> float | None:
@@ -99,11 +105,11 @@ def _sanitize_loaded_records(records: Mapping[str, Any]) -> tuple[dict[str, Any]
         if isinstance(value, Mapping):
             updated = {key: visit(item, candidate_id, key) for key, item in value.items()}
             if (field_name == "target_proof"
-                    and updated.get("status") in {"eligible", "verified"}):
+                    and _is_portable_actionable_status(updated.get("status"))):
                 updated["status"] = "not_checked"
                 updated["detail"] = "stored target proof requires fresh exact target validation"
                 downgraded.add(candidate_id)
-            elif (updated.get("status") in {"eligible", "verified"}
+            elif (_is_portable_actionable_status(updated.get("status"))
                     and isinstance(updated.get("url") or updated.get("final_url"), str)
                     and not _stored_proof_is_current(updated)):
                 updated["status"] = "not_checked"
@@ -197,7 +203,7 @@ def _report_metadata(value: Mapping[str, Any] | None) -> Mapping[str, Any]:
     def sanitize_coverage(value: Any) -> Any:
         if isinstance(value, Mapping):
             updated = {key: sanitize_coverage(item) for key, item in value.items()}
-            if (updated.get("status") in {"eligible", "verified", "reachable"}
+            if (_is_portable_actionable_status(updated.get("status"))
                     and isinstance(updated.get("url") or updated.get("final_url"), str)):
                 updated["status"] = "not_checked"
                 updated["detail"] = "stored coverage link proof requires fresh validation"
@@ -576,9 +582,70 @@ def _update_record_evidence(record: Mapping[str, Any], outcome: Mapping[str, Any
         if not isinstance(existing, list):
             raise SnapshotError("frozen result record link proofs are invalid")
         links = [_thaw_json(value) for value in outcome["link_proofs"]]
-        if len(existing) + len(links) > 20:
-            raise SnapshotError("frozen result record exceeds proof bound")
-        updated["link_proofs"] = existing + links
+        # Portable remote proofs are demoted on load and then checked again.
+        # Replace the same exact destination instead of appending a stale copy;
+        # keep fresh outcomes first so newly checked source links are never
+        # crowded out by an older 20-proof record.
+        merged: list[Any] = []
+        seen: set[tuple[object, object]] = set()
+
+        def proof_key(value: object) -> tuple[object, object]:
+            if not isinstance(value, Mapping):
+                return (None, None)
+            return (value.get("role"), value.get("url") or value.get("final_url"))
+
+        for link in [*links, *existing]:
+            key = proof_key(link)
+            if key in seen:
+                continue
+            seen.add(key)
+            merged.append(link)
+        updated["link_proofs"] = merged[:20]
+
+        # Loading a portable snapshot correctly demotes its old attribution
+        # links. Rebuild source attribution only when this validation pass has
+        # independently proved the exact native listing URL retained in the
+        # frozen occurrence. A fresh generic/repository proof must not be
+        # relabelled as a registry result.
+        occurrences = updated.get("occurrences", [])
+        existing_attributions = updated.get("attributions", [])
+        if not isinstance(occurrences, list) or not isinstance(existing_attributions, list):
+            raise SnapshotError("frozen result record attribution evidence is invalid")
+        fresh_attributions: list[dict[str, Any]] = []
+        for link in links:
+            if not isinstance(link, Mapping) or link.get("status") != "eligible":
+                continue
+            url, role = link.get("url") or link.get("final_url"), link.get("role")
+            if not isinstance(url, str) or role not in {"listing", "bundle_listing", "source_page", "repository"}:
+                continue
+            for occurrence in occurrences:
+                if (not isinstance(occurrence, Mapping)
+                        or occurrence.get("listing_url") != url
+                        or occurrence.get("listing_role") != role):
+                    continue
+                source_id = occurrence.get("source_id")
+                if not isinstance(source_id, str) or not source_id:
+                    continue
+                attribution: dict[str, Any] = {
+                    "source_id": source_id, "label": source_id, "role": role,
+                    "url": url, "status": "eligible",
+                }
+                native_rank = occurrence.get("native_rank")
+                if type(native_rank) is int and native_rank > 0:
+                    attribution["native_rank"] = native_rank
+                fresh_attributions.append(attribution)
+
+        attribution_keys: set[tuple[object, object, object]] = set()
+        rebuilt_attributions: list[Any] = []
+        for attribution in [*fresh_attributions, *existing_attributions]:
+            if not isinstance(attribution, Mapping):
+                continue
+            key = (attribution.get("source_id"), attribution.get("role"), attribution.get("url"))
+            if key in attribution_keys:
+                continue
+            attribution_keys.add(key)
+            rebuilt_attributions.append(attribution)
+        updated["attributions"] = rebuilt_attributions[:20]
     if "target_proof" in outcome:
         current = updated.get("target_proof")
         proposed = _thaw_json(outcome["target_proof"])

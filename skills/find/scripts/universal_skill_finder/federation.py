@@ -42,6 +42,13 @@ TRUST_PRIORITY = {
     "unverified": 1,
 }
 
+_REMOTE_ACTIONABLE_PROOF_STATUSES = frozenset({"eligible", "verified", "reachable"})
+
+
+def _is_remote_actionable_proof_status(value: object) -> bool:
+    """Match every remote spelling the renderer would treat as authority."""
+    return isinstance(value, str) and value.casefold() in _REMOTE_ACTIONABLE_PROOF_STATUSES
+
 
 class _CutoffCache(Cache):
     """A child-process cache that cannot publish after its collection cutoff."""
@@ -405,7 +412,7 @@ class UniversalSkillFinder:
                 # evidence, never trusted link state. Only the reviewed,
                 # separately cached anonymous validator may make a URL active.
                 for proof in candidate.link_proofs:
-                    if proof.get("status") in {"eligible", "verified", "reachable"}:
+                    if _is_remote_actionable_proof_status(proof.get("status")):
                         proof["status"] = "not_checked"
                         proof["detail"] = "remote candidate link requires reviewed destination validation"
                 if candidate.target_proof:
@@ -1341,13 +1348,23 @@ class UniversalSkillFinder:
         source_by_id = {source["id"]: source for source in self.config.sources}
         destinations: list[Any] = []
         expected_by_id: dict[str, dict[str, Any]] = {}
+        seen: set[tuple[str, str, str, str]] = set()
+
+        def add(destination: Destination, expected: dict[str, Any]) -> bool:
+            if destination.profile is None:
+                return False
+            key = (
+                destination.candidate_id, destination.role, destination.url or "",
+                json.dumps(destination.expected_identity, sort_keys=True, ensure_ascii=True, default=str),
+            )
+            if key in seen:
+                return False
+            seen.add(key)
+            destinations.append(destination)
+            expected_by_id[destination.candidate_id] = expected
+            return True
+
         for result in results:
-            if any(
-                isinstance(proof, dict) and proof.get("status") == "eligible"
-                and proof.get("role") in {"skill", "skill_destination", "repository"}
-                for proof in result.link_proofs
-            ):
-                continue
             for occurrence in result.occurrences:
                 if not isinstance(occurrence, dict):
                     continue
@@ -1364,32 +1381,31 @@ class UniversalSkillFinder:
                     destination = reviewed_destination(
                         result.id, role=listing_role, url=listing_url, adapter=str(adapter), expected_identity=expected,
                     )
-                    if destination.profile is not None:
-                        destinations.append(destination)
-                        listing_added = True
-                        expected_by_id[result.id] = {
-                            "kind": "reviewed_listing", "expected": destination.expected_identity,
-                        }
+                    listing_added = add(destination, {
+                        "kind": "reviewed_listing", "expected": destination.expected_identity,
+                    })
                 if (not listing_added and adapter in {"skillhub-public", "skillhub-pro"}
                         and isinstance(source.get("base_url"), str)):
                     native_id = occurrence.get("native_id")
                     if isinstance(native_id, str) and native_id:
                         try:
-                            destinations.append(skillhub_destination(
+                            destination = skillhub_destination(
                                 result.id, base_url=source["base_url"], native_id=native_id, expected_identity=expected,
-                            ))
-                            expected_by_id[result.id] = {"kind": "skillhub_listing", "expected": expected or {"id": native_id}}
+                            )
+                            add(destination, {
+                                "kind": "skillhub_listing", "expected": expected or {"id": native_id},
+                            })
                         except ValueError:
                             pass
                 repository, ref, skill_path = occurrence.get("repository"), occurrence.get("ref"), occurrence.get("skill_path")
                 if all(isinstance(value, str) and value for value in (repository, ref, skill_path)):
                     try:
-                        destinations.append(github_skill_destination(
+                        destination = github_skill_destination(
                             result.id, repository=repository, ref=ref, skill_path=skill_path,
-                        ))
-                        expected_by_id[result.id] = {
+                        )
+                        add(destination, {
                             "kind": "github_tree", "expected": {"repository": repository, "ref": ref, "skill_path": skill_path},
-                        }
+                        })
                     except ValueError:
                         pass
         return destinations, expected_by_id
@@ -1415,7 +1431,6 @@ class UniversalSkillFinder:
         # A large source pool is not a request to check every destination now.
         # Replenish the first page in frozen rank order, at most 30 identities;
         # leave the remaining pool for an explicit continuation.
-        proofs: dict[str, LinkProof] = {}
         deltas: dict[str, dict[str, Any]] = {}
         target_cache = TargetResolutionCache()
         checked_results = results[:30]
@@ -1423,9 +1438,11 @@ class UniversalSkillFinder:
         while offset < len(checked_results):
             if validation_deadline.remaining() <= 0:
                 break
-            eligible = sum(self._validation_status(item) == "eligible" or
-                           item.id in proofs and proofs[item.id].status == "eligible"
-                           for item in checked_results[:offset])
+            eligible = sum(
+                self._validation_status(item) == "eligible"
+                or deltas.get(item.id, {}).get("status") == "eligible"
+                for item in checked_results[:offset]
+            )
             if eligible >= requested_size:
                 break
             batch = checked_results[offset:offset + min(policy.final_validation_workers, requested_size - eligible)]
@@ -1454,8 +1471,6 @@ class UniversalSkillFinder:
                         future.cancel()
                         continue
                     deltas[result_id] = delta
-                    for proof_data in delta.get("link_proofs", []):
-                        proofs[result_id] = LinkProof(**proof_data)
             finally:
                 workers.shutdown(wait=False, cancel_futures=True)
         by_id = {result.id: result for result in results}
@@ -1465,12 +1480,31 @@ class UniversalSkillFinder:
                 by_id[result_id].target_proof = dict(target)
                 if target.get("status") == "eligible":
                     by_id[result_id].content_sha256 = target.get("content_sha256")
-        for result_id, proof in proofs.items():
+        proof_priority = {"not_checked": 0, "unavailable": 1, "inconclusive": 2, "eligible": 3}
+        for result_id, delta in deltas.items():
             result = by_id[result_id]
-            proof_data = asdict(proof)
-            if not any(existing == proof_data for existing in result.link_proofs):
-                result.link_proofs.append(proof_data)
-            if proof.status == "eligible":
+            for raw_proof in delta.get("link_proofs", []):
+                if not isinstance(raw_proof, dict):
+                    continue
+                fields = LinkProof.__dataclass_fields__
+                try:
+                    proof = LinkProof(**{key: value for key, value in raw_proof.items() if key in fields})
+                except (TypeError, ValueError):
+                    continue
+                proof_data = asdict(proof)
+                proof_key = (proof.role, proof.url)
+                existing_index = next((
+                    index for index, existing in enumerate(result.link_proofs)
+                    if isinstance(existing, dict) and (existing.get("role"), existing.get("url")) == proof_key
+                ), None)
+                if existing_index is None:
+                    result.link_proofs.append(proof_data)
+                elif proof_priority.get(proof.status, -1) >= proof_priority.get(
+                    str(result.link_proofs[existing_index].get("status", "not_checked")), -1,
+                ):
+                    result.link_proofs[existing_index] = proof_data
+                if proof.status != "eligible":
+                    continue
                 for occurrence in result.occurrences:
                     if not isinstance(occurrence, dict) or occurrence.get("listing_url") != proof.url:
                         continue
@@ -1478,6 +1512,9 @@ class UniversalSkillFinder:
                         "source_id": occurrence.get("source_id"), "label": occurrence.get("source_id"),
                         "role": proof.role, "url": proof.url, "status": "eligible",
                     }
+                    native_rank = occurrence.get("native_rank")
+                    if type(native_rank) is int and native_rank > 0:
+                        attribution["native_rank"] = native_rank
                     if not any(existing == attribution for existing in result.attributions):
                         result.attributions.append(attribution)
 
@@ -1495,6 +1532,8 @@ class UniversalSkillFinder:
             return "eligible"
         statuses = {str(status) for _role, status in destinations}
         target_status = result.target_proof.get("status") if isinstance(result.target_proof, dict) else None
+        if target_status == "eligible" and "unavailable" in statuses:
+            statuses.add("inconclusive")
         if target_status in {"inconclusive", "not_checked", "unavailable"}:
             statuses.add(target_status)
         if "inconclusive" in statuses:

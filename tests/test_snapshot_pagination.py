@@ -30,6 +30,7 @@ from universal_skill_finder.snapshot import (
     update_snapshot,
     validate_frozen_result_record,
 )
+from universal_skill_finder.presentation import render_report
 from universal_skill_finder.validation import AnonymousResponse, Destination, ProviderProfile, TargetResolutionCache
 
 
@@ -366,6 +367,74 @@ class SnapshotPaginationTests(unittest.TestCase):
         self.assertTrue(repeated.reused)
         self.assertEqual((repeated.ids, dict(repeated.snapshot.result_numbers)), (("b",), {"a": 1, "b": 2}))
 
+    def test_fresh_destination_proofs_replace_stale_snapshot_entries_within_bound(self):
+        old = [
+            {"role": "listing", "url": f"https://example.test/old-{index}", "status": "not_checked"}
+            for index in range(20)
+        ]
+        snapshot = create_snapshot(
+            query="pdf", options={}, config_revision="frozen", ordered_pool=["candidate"],
+            result_records={"candidate": {"id": "candidate", "link_proofs": old}},
+            requested_cap=1, page_size=1,
+        )
+
+        page = materialize_page(snapshot, None, validate=lambda _candidate: {
+            "status": "eligible",
+            "link_proofs": [
+                {"role": "listing", "url": "https://example.test/old-0", "status": "eligible"},
+                {"role": "listing", "url": "https://example.test/current", "status": "eligible"},
+            ],
+        })
+
+        proofs = page.snapshot.result_records["candidate"]["link_proofs"]
+        self.assertEqual(len(proofs), 20)
+        self.assertEqual(proofs[0]["url"], "https://example.test/old-0")
+        self.assertEqual(proofs[0]["status"], "eligible")
+        self.assertEqual(proofs[1]["url"], "https://example.test/current")
+        self.assertEqual(sum(proof["url"] == "https://example.test/old-0" for proof in proofs), 1)
+
+    def test_continuation_rebuilds_found_on_from_fresh_exact_listing_proof(self):
+        listing = "https://tessl.io/registry/skills/github/acme/tools/pdf-creator"
+        record = {
+            "id": "candidate", "name": "pdf-creator", "description": "Create PDF documents",
+            "repository": "acme/tools", "skill_path": "skills/pdf-creator", "ref": None,
+            "source_ids": ["tessl"], "install": {}, "warnings": [], "metrics_by_source": {},
+            "occurrences": [{
+                "source_id": "tessl", "adapter": "tessl", "native_rank": 1,
+                "listing_url": listing, "listing_role": "listing",
+            }],
+            "link_proofs": [{"role": "listing", "url": listing, "status": "eligible"}],
+            "attributions": [{
+                "source_id": "tessl", "label": "Tessl", "role": "listing",
+                "url": listing, "status": "eligible", "native_rank": 1,
+            }],
+        }
+        snapshot = create_snapshot(
+            query="pdf", options={}, config_revision="frozen", ordered_pool=["candidate"],
+            result_records={"candidate": record}, requested_cap=1, page_size=1,
+        )
+        with TemporaryDirectory() as temporary:
+            loaded = load_snapshot(save_exclusive(Path(temporary), snapshot))
+        self.assertEqual(loaded.result_records["candidate"]["attributions"][0]["status"], "not_checked")
+
+        page = materialize_page(loaded, None, validate=lambda _candidate, _record: {
+            "status": "eligible",
+            "link_proofs": [{"role": "listing", "url": listing, "status": "eligible"}],
+        })
+        refreshed = resolve_materialized_result(page.snapshot, 1)
+        self.assertEqual(refreshed["attributions"][0]["status"], "eligible")
+        rendered = {
+            format: render_report({
+                "report_format_version": 2, "mode": "online", "query": "pdf",
+                "results": [refreshed], "coverage": [], "requested_count": 1,
+                "page_size": 1, "unique_count": 1, "eligible_count": 1,
+            }, format=format)
+            for format in ("markdown", "plain", "html")
+        }
+        self.assertIn(f"**Found on:** [tessl]({listing})", rendered["markdown"])
+        self.assertIn(f"Found on: tessl ({listing})", rendered["plain"])
+        self.assertIn(f'<dt>Found on</dt><dd><a href="{listing}">tessl</a>', rendered["html"])
+
     def test_record_aware_validator_cannot_mutate_frozen_target_identity(self):
         record = {"id": "a", "target_proof": {"kind": "github", "status": "not_checked",
                                                    "reported": {"repository": "owner/repo"}}}
@@ -424,9 +493,9 @@ class SnapshotPaginationTests(unittest.TestCase):
         self.assertEqual(dict(loaded.result_records), {})
 
     def test_load_downgrades_all_portable_web_proofs_even_when_the_shape_is_current(self):
-        records = {item: {"id": item, "link_proofs": []} for item in ("forged", "reviewed")}
+        records = {item: {"id": item, "link_proofs": []} for item in ("forged", "reviewed", "reachable")}
         snapshot = create_snapshot(query="pdf", options={}, config_revision="frozen",
-                                   ordered_pool=["forged", "reviewed"], result_records=records)
+                                   ordered_pool=["forged", "reviewed", "reachable"], result_records=records)
         payload = snapshot_dict(snapshot)
         now = datetime.now(timezone.utc).isoformat()
         payload["result_records"]["forged"]["link_proofs"] = [{
@@ -437,8 +506,12 @@ class SnapshotPaginationTests(unittest.TestCase):
             "status": "eligible", "identity_basis": "github-owner-repository-path-v1",
             "http_status": 200, "checked_at": now,
         }]
+        payload["result_records"]["reachable"]["link_proofs"] = [{
+            "role": "listing", "url": "https://evil.example/legacy", "status": "reachable",
+        }]
         payload["validation_ledger"] = {
             "forged": {"status": "eligible"}, "reviewed": {"status": "eligible"},
+            "reachable": {"status": "eligible"},
         }
         with TemporaryDirectory() as temporary:
             target = Path(temporary) / f"{snapshot.snapshot_id}.json"
@@ -448,6 +521,8 @@ class SnapshotPaginationTests(unittest.TestCase):
         self.assertEqual(loaded.validation_ledger["forged"]["status"], "not_checked")
         self.assertEqual(loaded.result_records["reviewed"]["link_proofs"][0]["status"], "not_checked")
         self.assertEqual(loaded.validation_ledger["reviewed"]["status"], "not_checked")
+        self.assertEqual(loaded.result_records["reachable"]["link_proofs"][0]["status"], "not_checked")
+        self.assertEqual(loaded.validation_ledger["reachable"]["status"], "not_checked")
 
     def test_load_demotes_portable_target_flag_without_a_url(self):
         snapshot = create_snapshot(
@@ -482,6 +557,10 @@ class SnapshotPaginationTests(unittest.TestCase):
         self.assertIsInstance(frozen["occurrences"], tuple)
         transport = _ScriptedProofTransport([
             AnonymousResponse(200, body=b"---\nname: Humanize\n---\nRewrite prose.", connection_address="8.8.8.8"),
+            AnonymousResponse(200, body=b'<meta name="octolytics-dimension-repository_nwo" content="owner/repo">',
+                              connection_address="8.8.8.8"),
+            AnonymousResponse(200, body=b'<meta name="octolytics-dimension-repository_nwo" content="owner/repo">',
+                              connection_address="8.8.8.8"),
         ])
         outcome = validate_frozen_result_record(
             "candidate", frozen, destinations=[], transport=transport, resolver=_public_resolver,
@@ -491,6 +570,8 @@ class SnapshotPaginationTests(unittest.TestCase):
         self.assertEqual((outcome["status"], outcome["target_proof"]["status"], outcome["link_proofs"][0]["role"]),
                          ("eligible", "eligible", "skill_destination"))
         self.assertEqual(transport.calls[0][1], "https://raw.githubusercontent.com/owner/repo/main/skills/humanize/SKILL.md")
+        self.assertEqual(transport.calls[1][1], "https://github.com/owner/repo/tree/main/skills/humanize")
+        self.assertEqual(transport.calls[2][1], "https://github.com/owner/repo")
 
     def test_fresh_target_proof_can_replace_archive_evidence_without_changing_identity(self):
         record = {
@@ -508,6 +589,10 @@ class SnapshotPaginationTests(unittest.TestCase):
                                    result_records={"candidate": record})
         transport = _ScriptedProofTransport([
             AnonymousResponse(200, body=b"---\nname: Humanize\n---\nRewrite prose.", connection_address="8.8.8.8"),
+            AnonymousResponse(200, body=b'<meta name="octolytics-dimension-repository_nwo" content="owner/repo">',
+                              connection_address="8.8.8.8"),
+            AnonymousResponse(200, body=b'<meta name="octolytics-dimension-repository_nwo" content="owner/repo">',
+                              connection_address="8.8.8.8"),
         ])
         page = materialize_page(
             snapshot, None,

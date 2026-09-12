@@ -40,6 +40,10 @@ class HtmlPresentationTests(unittest.TestCase):
             reported={"repository": row.repository, "ref": "main", "skill_path": row.skill_path},
             resolved={"repository": row.repository, "ref": "main", "skill_path": row.skill_path},
         )
+        row.link_proofs = [
+            proof("skill_destination", "eligible", "https://github.com/davila7/claude-code-templates/tree/main/cli-tool/components/skills/productivity/humanizer"),
+            proof("repository", "eligible", "https://github.com/davila7/claude-code-templates"),
+        ]
         text = render_report(found, assistant="claude-code", format="html")
         self.assertTrue(text.startswith("<!doctype html>"))
         self.assertIn("<style>", text)
@@ -55,14 +59,17 @@ class HtmlPresentationTests(unittest.TestCase):
         self.assertIn("<summary>Description</summary>", text)
         self.assertIn("Full retained description marker.", text)
         self.assertIn("<summary>Exact location and installation command</summary>", text)
-        self.assertIn("cli-tool/components/skills/productivity/humanizer @ main", text)
+        self.assertIn(
+            '>cli-tool/components/skills/productivity/humanizer</a> @ main',
+            text,
+        )
         self.assertIn("<strong>Reported location:</strong>", text)
         self.assertIn("npx skills@1.5.23 add https://github.com/davila7/claude-code-templates/tree/main/cli-tool/components/skills/productivity/humanizer --skill humanizer --agent claude-code --copy", text)
         self.assertIn("Local check:", text)
         self.assertNotIn("<details open", text)
         closed_header = text.split('<article class="card">', 1)[1].split("<details>", 1)[0]
         self.assertIn("skillsmp: stars: 30,563", closed_header)
-        self.assertNotIn(row.skill_path, closed_header)
+        self.assertNotIn(f">{row.skill_path}<", closed_header)
         self.assertIn("Requested up to 3 results · Page size 2", text)
         self.assertIn("with verified destinations (not necessarily install-ready)", text)
 

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import sys
 import time
 import unittest
@@ -13,11 +14,14 @@ sys.path.insert(0, str(ROOT / "skills" / "find" / "scripts"))
 from universal_skill_finder.adapters.repositories import _repo_candidate
 from universal_skill_finder.adapters.base import AdapterContext
 from universal_skill_finder.adapters.registries import PolySkillAdapter
+from universal_skill_finder.adapters.tessl import API_ORIGIN, SEARCH_ENDPOINT, TesslAdapter
 from universal_skill_finder.cli import _snapshot_destinations
 from universal_skill_finder.cache import Cache
 from universal_skill_finder.config import EffectiveConfig
 from universal_skill_finder.federation import UniversalSkillFinder
-from universal_skill_finder.models import Candidate
+from universal_skill_finder.http import HttpClient, HttpResponse
+from universal_skill_finder.models import Candidate, Coverage, SearchReport
+from universal_skill_finder.presentation import render_report
 from universal_skill_finder.runtime import Deadline, NetworkPolicy
 from universal_skill_finder.validation import (
     AnonymousResponse,
@@ -63,6 +67,56 @@ class _PayloadHttp:
         return self.payload
 
 
+class _TesslPayloadHttp(HttpClient):
+    def __init__(self, payload):
+        super().__init__()
+        self.payload = payload
+
+    def request(self, _method, _url, **_kwargs):
+        return HttpResponse(json.dumps(self.payload).encode("utf-8"), 200, {}, SEARCH_ENDPOINT)
+
+
+class _TesslSeamTransport:
+    repository = "fernandezbaptiste/claude-code-skills"
+    listing = (
+        "https://tessl.io/registry/skills/github/"
+        "fernandezbaptiste/claude-code-skills/pdf-creator"
+    )
+
+    def __init__(self, *, listing_status: int):
+        self.listing_status = listing_status
+        self.calls: list[str] = []
+
+    def request(self, _method, url, **_kwargs):
+        self.calls.append(url)
+        if url == f"https://api.github.com/repos/{self.repository}":
+            body = json.dumps({"full_name": self.repository, "default_branch": "main"}).encode("utf-8")
+            return AnonymousResponse(200, {}, body, "8.8.8.8")
+        if url == f"https://raw.githubusercontent.com/{self.repository}/main/pdf-creator/SKILL.md":
+            return AnonymousResponse(
+                200, {}, b"---\nname: pdf-creator\n---\nCreate professional PDFs.", "8.8.8.8",
+            )
+        if url in {
+            f"https://github.com/{self.repository}",
+            f"https://github.com/{self.repository}/tree/main/pdf-creator",
+        }:
+            body = (
+                '<meta name="octolytics-dimension-repository_nwo" '
+                f'content="{self.repository}">'
+            ).encode("utf-8")
+            return AnonymousResponse(200, {}, body, "8.8.8.8")
+        if url == self.listing:
+            if self.listing_status == 404:
+                return AnonymousResponse(404, {}, b"", "8.8.8.8")
+            body = (
+                f'<meta property="og:url" content="{self.listing}">'
+                '<h1>pdf-creator</h1>'
+                f'<a href="https://github.com/{self.repository}">Repository</a>'
+            ).encode("utf-8")
+            return AnonymousResponse(200, {"content-type": "text/html"}, body, "8.8.8.8")
+        raise AssertionError(f"unexpected validation URL: {url}")
+
+
 class _RouteTransport:
     def __init__(self):
         self.calls: list[str] = []
@@ -78,6 +132,9 @@ class _RouteTransport:
                 "<h1>acme/pdf-tools</h1><p>1.2.3</p>"
             ),
             "https://github.com/acme/repository-skill": (
+                '<meta name="octolytics-dimension-repository_nwo" content="acme/repository-skill">'
+            ),
+            "https://github.com/acme/repository-skill/tree/main": (
                 '<meta name="octolytics-dimension-repository_nwo" content="acme/repository-skill">'
             ),
             "https://api.github.com/repos/acme/repository-skill": (
@@ -237,6 +294,121 @@ class ProviderLinkContractTests(unittest.TestCase):
         wrong, _ = _proof(destination, '<link rel="canonical" href="https://tessl.io/registry/acme/humanize/9.9.9"><h1>acme/humanize</h1><p>1.2.3</p>')
         self.assertEqual(wrong.status, "inconclusive")
 
+    def test_tessl_individual_listing_requires_exact_page_repository_and_skill(self) -> None:
+        url = "https://tessl.io/registry/skills/github/acme/toolbox/pdf-creator"
+        destination = reviewed_destination(
+            "one", role="listing", url=url, adapter="tessl", expected_identity=None,
+        )
+        self.assertIsNotNone(destination.profile)
+        self.assertEqual(destination.expected_identity, {
+            "repository": "acme/toolbox", "name": "pdf-creator", "url": url,
+        })
+        valid, _ = _proof(destination, (
+            f'<meta property="og:url" content="{url}"><h1>pdf-creator</h1>'
+            '<a href="https://github.com/acme/toolbox">Repository</a>'
+        ))
+        self.assertEqual(valid.status, "eligible")
+        wrong, _ = _proof(destination, (
+            f'<link rel="canonical" href="{url}"><h1>pdf-creator</h1>'
+            '<a href="https://github.com/attacker/toolbox">Repository</a>'
+        ))
+        self.assertNotEqual(wrong.status, "eligible")
+
+        missing = validate_destination(
+            destination,
+            transport=_Transport(AnonymousResponse(404, {}, b"", "8.8.8.8")),
+            resolver=_resolver, budget=_Budget(), permits=_Permits(),
+            deadline=time.monotonic() + 2,
+        )
+        self.assertEqual(missing.status, "unavailable")
+
+    def test_tessl_candidate_renders_github_navigation_and_only_a_live_native_listing(self) -> None:
+        repository = _TesslSeamTransport.repository
+        listing = _TesslSeamTransport.listing
+        tree = f"https://github.com/{repository}/tree/main/pdf-creator"
+        root = f"https://github.com/{repository}"
+        raw = f"https://raw.githubusercontent.com/{repository}/main/pdf-creator/SKILL.md"
+        payload = {
+            "data": [{
+                "id": "019f948e-9997-7013-8ca1-000000000001",
+                "type": "skill",
+                "attributes": {
+                    "name": "pdf-creator",
+                    "description": "Create professional PDFs.",
+                    "sourceUrl": root,
+                    "path": "pdf-creator/SKILL.md",
+                    "isPrivate": False,
+                    "validationPassed": None,
+                    "scores": None,
+                },
+            }],
+            "meta": {"pagination": {"total": 1, "pages": 1, "number": 1, "size": 1}},
+        }
+        source = {
+            "id": "tessl", "kind": "registry", "adapter": "tessl",
+            "base_url": API_ORIGIN, "trust": "unverified",
+        }
+        policy = NetworkPolicy.for_mode()
+
+        for listing_status in (200, 404):
+            with self.subTest(listing_status=listing_status), TemporaryDirectory() as temporary:
+                cache = Cache(Path(temporary) / "cache")
+                context = AdapterContext(_TesslPayloadHttp(payload), cache, {})
+                candidates = TesslAdapter().search(source, "pdf creator", 1, context)
+                self.assertEqual(len(candidates), 1)
+                self.assertEqual(candidates[0].listing_url, listing)
+
+                config = EffectiveConfig(
+                    settings={}, packs=[], sources=[source],
+                    overlay_path=Path(temporary) / "sources.json", overlay={},
+                )
+                transport = _TesslSeamTransport(listing_status=listing_status)
+                finder = UniversalSkillFinder(
+                    config, cache=cache, validation_transport=transport,
+                    validation_resolver=_resolver,
+                )
+                results = finder._merge(candidates, "pdf creator")
+                finder._validate_ranked_pool(
+                    results, Deadline.start(policy), policy, requested_size=1,
+                )
+                result = results[0]
+                result.validation_status = finder._validation_status(result)
+                result.result_number = 1
+                report = SearchReport(
+                    query="pdf creator", results=[result],
+                    coverage=[Coverage("tessl", "ok", 1)],
+                    generated_at="2026-09-12T00:00:00+00:00",
+                    configuration_path=str(Path(temporary) / "sources.json"),
+                    accepted_occurrences=1, unique_count=1, eligible_count=1,
+                    page_shown=1, materialized_total=1,
+                )
+                rendered = {
+                    format: render_report(report, assistant="codex", format=format)
+                    for format in ("markdown", "plain", "html")
+                }
+
+                self.assertEqual(result.validation_status, "eligible")
+                self.assertEqual(result.target_proof["url"], raw)
+                self.assertFalse(any(proof.get("url") == raw for proof in result.link_proofs))
+                self.assertIn(f"### 1. [pdf-creator]({tree})", rendered["markdown"])
+                self.assertIn(f"[{repository}]({root})", rendered["markdown"])
+                self.assertIn(f"pdf-creator ({tree})", rendered["plain"])
+                self.assertIn(f"{repository} ({root})", rendered["plain"])
+                self.assertIn(f'href="{tree}"', rendered["html"])
+                self.assertIn(f'href="{root}"', rendered["html"])
+                for output in rendered.values():
+                    self.assertNotIn(raw, output)
+                    self.assertNotIn("/blob/main/pdf-creator/SKILL.md", output)
+                if listing_status == 200:
+                    self.assertTrue(all(listing in output for output in rendered.values()))
+                    self.assertIn(
+                        ("tessl", listing),
+                        {(entry["source_id"], entry["url"]) for entry in result.attributions},
+                    )
+                else:
+                    self.assertTrue(all(listing not in output for output in rendered.values()))
+                    self.assertIn("tessl (listing not verified)", rendered["markdown"])
+
     def test_tessl_repository_uses_github_metadata_contract(self) -> None:
         destination = reviewed_destination(
             "one", role="repository", url="https://github.com/acme/humanize", adapter="tessl", expected_identity=None,
@@ -301,4 +473,6 @@ class ProviderLinkContractTests(unittest.TestCase):
             "https://tessl.io/registry/acme/pdf-tools/1.2.3",
             "https://api.github.com/repos/acme/repository-skill",
             "https://raw.githubusercontent.com/acme/repository-skill/main/SKILL.md",
+            "https://github.com/acme/repository-skill/tree/main",
+            "https://github.com/acme/repository-skill",
         })

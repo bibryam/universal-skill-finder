@@ -296,12 +296,16 @@ class FairFederationTests(unittest.TestCase):
 
         class SlowTransport:
             def __init__(self):
+                self.entered = threading.Event()
+                self.release = threading.Event()
                 self.finished = threading.Event()
                 self.calls = 0
 
             def request(self, _method, _url, **_kwargs):
                 self.calls += 1
-                time.sleep(0.01)
+                self.entered.set()
+                if not self.release.wait(5.0):
+                    raise RuntimeError("fixture release timed out")
                 self.finished.set()
                 return AnonymousResponse(200, body=b'{"id":"one"}', connection_address="8.8.8.8")
 
@@ -313,10 +317,32 @@ class FairFederationTests(unittest.TestCase):
                             validation_resolver=lambda _host, _port: ("8.8.8.8",))
         finder.adapter_map = {"skills-sh": Adapter()}
         finder._validate_ranked_pool = lambda *_args, **_kwargs: None  # type: ignore[method-assign]
-        policy = NetworkPolicy(0.02, 0.20, 0.05)
+        policy = NetworkPolicy(1.0, 2.0, 1.0)
+        outcome = {}
+        done = threading.Event()
+
+        def run_search():
+            try:
+                outcome["report"] = finder.search("pdf forms", preview=True)
+            except BaseException as exc:
+                outcome["error"] = exc
+            finally:
+                done.set()
 
         with patch("universal_skill_finder.federation.NetworkPolicy.for_mode", return_value=policy):
-            finder.search("pdf forms", preview=True)
+            worker = threading.Thread(target=run_search, name="preview-join-fixture")
+            worker.start()
+            try:
+                self.assertTrue(transport.entered.wait(2.0), "preview validation did not start")
+                self.assertFalse(done.is_set(), "search returned while preview validation was active")
+            finally:
+                transport.release.set()
+            self.assertTrue(done.wait(2.0), "search did not return after preview validation finished")
+            worker.join(timeout=0.1)
+
+        self.assertFalse(worker.is_alive())
+        if "error" in outcome:
+            raise outcome["error"]
 
         self.assertTrue(transport.finished.is_set())
         self.assertEqual(transport.calls, 1)
@@ -479,8 +505,74 @@ class FairFederationTests(unittest.TestCase):
             "https://github.com/owner/repo/tree/main/skills/pdf-forms",
         ])
         self.assertEqual(report.results[0].validation_status, "eligible")
-        self.assertEqual(report.results[0].link_proofs[-1]["role"], "repository")
+        self.assertEqual(report.results[0].link_proofs[-1]["role"], "skill_destination")
         self.assertEqual(report.results[0].link_proofs[-1]["status"], "eligible")
+
+    def test_exact_target_keeps_all_source_listing_proofs_and_attributions(self):
+        class Adapter:
+            def search(self, source, query, limit, context):
+                source_id = source["id"]
+                return [Candidate(
+                    f"{source_id}-native", "PDF forms", "Fill PDF forms", source_id, "registry", "skills-sh",
+                    repository="owner/repo", ref="main", skill_path="skills/pdf-forms",
+                    listing_url=f"https://skills.sh/owner/repo/{source_id}", listing_role="listing",
+                    listing_derivation="source_provided",
+                )]
+
+        class Transport:
+            def __init__(self):
+                self.urls = []
+
+            def request(self, _method, url, **_kwargs):
+                self.urls.append(url)
+                if url.startswith("https://raw.githubusercontent.com/"):
+                    return AnonymousResponse(
+                        200, body=b"---\nname: PDF forms\n---\nFill PDF forms.", connection_address="8.8.8.8",
+                    )
+                if url.startswith("https://github.com/"):
+                    return AnonymousResponse(
+                        200, body=b'<meta name="octolytics-dimension-repository_nwo" content="owner/repo">',
+                        connection_address="8.8.8.8",
+                    )
+                terminal = url.rsplit("/", 1)[-1]
+                return AnonymousResponse(
+                    200, body=f"<nav>owner/repo</nav><h1>{terminal}</h1>".encode(),
+                    connection_address="8.8.8.8",
+                )
+
+        root = Path(self.temporary.name)
+        sources = [registry_source("first", "https://skills.sh"), registry_source("second", "https://skills.sh")]
+        config = EffectiveConfig(settings={}, packs=[], sources=sources, overlay_path=root / "sources.json", overlay={})
+        transport = Transport()
+        finder = UniversalSkillFinder(
+            config, cache=Cache(root / "multi-source-cache"), validation_transport=transport,
+            validation_resolver=lambda _host, _port: ("8.8.8.8",),
+        )
+        finder.adapter_map = {"skills-sh": Adapter()}
+
+        report = finder.search("pdf forms")
+
+        self.assertEqual(len(report.results), 1)
+        result = report.results[0]
+        self.assertEqual(result.validation_status, "eligible")
+        self.assertEqual(
+            {(proof["role"], proof["url"]) for proof in result.link_proofs if proof["status"] == "eligible"},
+            {
+                ("skill_destination", "https://github.com/owner/repo/tree/main/skills/pdf-forms"),
+                ("repository", "https://github.com/owner/repo"),
+                ("listing", "https://skills.sh/owner/repo/first"),
+                ("listing", "https://skills.sh/owner/repo/second"),
+            },
+        )
+        self.assertEqual(
+            {(row["source_id"], row["url"]) for row in result.attributions},
+            {
+                ("first", "https://skills.sh/owner/repo/first"),
+                ("second", "https://skills.sh/owner/repo/second"),
+            },
+        )
+        self.assertFalse(any(url.startswith("https://raw.githubusercontent.com/")
+                             for _role, url in {(proof["role"], proof["url"] or "") for proof in result.link_proofs}))
 
     def test_preview_emits_only_early_verified_unnumbered_evidence_without_changing_pool(self):
         class Adapter:

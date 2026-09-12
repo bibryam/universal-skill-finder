@@ -24,7 +24,10 @@ def _result(*, number: int, name: str = "humanizer", repository: str = "owner/re
         install={"kind": "github", "repository": repository, "skill_path": path,
                  "ref": ref, "requires_approval": True}, warnings=[], occurrences=[],
         result_number=number, validation_status="eligible",
-        link_proofs=[{"role": "skill_destination", "url": tree_url, "status": "eligible"}],
+        link_proofs=[
+            {"role": "skill_destination", "url": tree_url, "status": "eligible"},
+            {"role": "repository", "url": f"https://github.com/{repository}", "status": "eligible"},
+        ],
         target_proof={
             "kind": "github", "status": "eligible",
             "method": "anonymous_exact_skill_md_get", "identity_basis": "github-exact-skill-md-v1",
@@ -64,7 +67,7 @@ class CompactPresentationTests(unittest.TestCase):
         heading = "### 1. [humanizer](https://github.com/owner/repository/tree/main/skills/humanizer)"
         self.assertIn(heading, text)
         first_card = text.split(heading, 1)[1].split("### 2.", 1)[0]
-        self.assertIn("**Location:** owner/repository › [skills/humanizer](https://github.com/owner/repository/tree/main/skills/humanizer)", first_card)
+        self.assertIn("**Location:** [owner/repository](https://github.com/owner/repository) › [skills/humanizer](https://github.com/owner/repository/tree/main/skills/humanizer)", first_card)
         self.assertIn("**Found on:** [SkillsMP](https://www.skillsmp.com/skills/humanizer) · [Tessl](https://tessl.io/skills/humanizer)", first_card)
         self.assertIn("**Signals:** skillsmp: stars: 30,563; tessl: downloads: 28", first_card)
         self.assertIn("descriptive words", first_card)
@@ -91,7 +94,7 @@ class CompactPresentationTests(unittest.TestCase):
         }
         row.target_proof["actual_name"] = "humanizer"
         resolved = render_report(_report([row]), assistant="codex")
-        self.assertIn("**Location:** reported/repository › reported/skill", resolved)
+        self.assertIn("**Location:** [reported/repository](https://github.com/reported/repository) › reported/skill", resolved)
         self.assertIn("**Verified target:** resolved/repository › resolved/skill · branch release", resolved)
 
         row.target_proof = {"status": "not_checked", "detail": "exact target needs review"}
@@ -104,7 +107,7 @@ class CompactPresentationTests(unittest.TestCase):
         row = _result(number=1)
         plain = render_report(_report([row]), assistant="claude-code", format="plain")
         self.assertIn("1. humanizer (https://github.com/owner/repository/tree/main/skills/humanizer)", plain)
-        self.assertIn("Location: owner/repository › skills/humanizer (https://github.com/owner/repository/tree/main/skills/humanizer)", plain)
+        self.assertIn("Location: owner/repository (https://github.com/owner/repository) › skills/humanizer (https://github.com/owner/repository/tree/main/skills/humanizer)", plain)
         self.assertIn("Found on: SkillsMP (https://www.skillsmp.com/skills/humanizer)", plain)
         self.assertIn("Signals: skillsmp: stars: 30,563", plain)
         self.assertIn("Inspect and install: type Inspect #1  Install #1", plain)
@@ -118,7 +121,7 @@ class CompactPresentationTests(unittest.TestCase):
         self.assertIn(row.skill_path, text)
         self.assertIn(" · branch " + row.ref + "  \n**Found on:**", text)
         row.skill_path = None
-        self.assertIn("**Location:** owner/repository (skill folder unavailable) · branch " + row.ref,
+        self.assertIn("**Location:** [owner/repository](https://github.com/owner/repository) (skill folder unavailable) · branch " + row.ref,
                       render_report(_report([row])))
 
     def test_reported_path_cannot_link_to_a_different_resolved_repository_or_ref(self):
@@ -126,7 +129,7 @@ class CompactPresentationTests(unittest.TestCase):
         row.target_proof["resolved"]["repository"] = "different/repository"
         row.target_proof["resolved"]["ref"] = "release"
         text = render_report(_report([row]), assistant="codex")
-        self.assertIn("**Location:** owner/repository › skills/humanizer", text)
+        self.assertIn("**Location:** [owner/repository](https://github.com/owner/repository) › skills/humanizer", text)
         self.assertNotIn("**Location:** owner/repository › [skills/humanizer]", text)
 
     def test_location_and_action_fallbacks_cover_missing_source_fields(self):

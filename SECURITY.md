@@ -2,7 +2,7 @@
 
 ## Report a vulnerability
 
-Use GitHub's **Security → Report a vulnerability** on this repository once private vulnerability reporting is enabled. Do not put credentials, working exploits, private queries, or sensitive logs in a public issue. If the private reporting button is unavailable, open an issue asking for a private reporting channel without disclosing the vulnerability.
+Use GitHub's **Security → Report a vulnerability** on this repository. Do not put credentials, working exploits, private queries, or sensitive logs in a public issue. If the private reporting button is unavailable, open an issue asking for a private reporting channel without disclosing the vulnerability.
 
 Include the affected version, operating system/Python version, reproduction steps, expected impact, and a minimal sanitized fixture. There is no promised response-time SLA. Security fixes target the latest release; older releases may not receive backports.
 
@@ -51,6 +51,8 @@ Cooperating configuration writers use an exclusive adjacent lock and compare the
 The cache retains queries and skill metadata in plaintext on your machine. TTL controls freshness, not deletion; there is no automatic eviction or total-disk quota. Use `doctor` to locate it and remove it through your file manager when needed. Do not share unredacted cache files or JSON reports: reports include a local configuration path.
 
 Cache envelopes and keys have explicit format and adapter-contract versions. Legacy or incompatible entries are ignored, not deleted. Search reports carry code/catalogue/configuration hashes; release archives include per-file hashes and a checksum. These identify bytes, not a signature, Git history, security attestation, or trustworthy upstream skill. Environment credential values are not read into configuration hashes; never embed secrets in source definitions.
+
+Saved JSON reports are portable, untrusted data rather than signed validation state. Loading one removes remote checked-link and exact-target authority regardless of status casing; a continuation must freshly validate a destination before rendering a checked link or installation proposal. Local file evidence is retained only when it has the bounded local proof shape and is still current.
 
 Resource limits are per source, not a global memory budget. Default archive limits are 50 MiB compressed and 256 MiB expanded with at most six concurrent workers. Response-body reading has a deadline, but DNS and connection behavior remain platform dependent. Rate limits and provider API changes can cause partial results.
 

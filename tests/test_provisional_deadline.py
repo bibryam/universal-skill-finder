@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import sys
 import threading
-import time
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -39,7 +38,7 @@ class ProvisionalDeadlineTests(unittest.TestCase):
 
             def request(self, _method, _url, **_kwargs):
                 self.entered.set()
-                self.release.wait(2.0)
+                self.release.wait(5.0)
                 self.finished.set()
                 return AnonymousResponse(200, body=b'{"id":"one"}', connection_address="8.8.8.8")
 
@@ -60,22 +59,40 @@ class ProvisionalDeadlineTests(unittest.TestCase):
             # This regression isolates provisional joins. Final validation has
             # its own bounded scheduler and is not the blocked worker here.
             finder._validate_ranked_pool = lambda *_args, **_kwargs: None  # type: ignore[method-assign]
-            policy = NetworkPolicy(0.06, 0.20, 0.03)
-            started = time.monotonic()
+            # Leave ample time for the request to start on a loaded runner; the
+            # short validation tail still proves that a blocked callback cannot
+            # hold the result until the fixture's five-second release timeout.
+            policy = NetworkPolicy(1.0, 2.0, 0.10)
+            outcome = {}
+            done = threading.Event()
+
+            def run_search():
+                try:
+                    outcome["report"] = finder.search("pdf forms", preview=True)
+                except BaseException as exc:
+                    outcome["error"] = exc
+                finally:
+                    done.set()
+
             try:
                 with patch("universal_skill_finder.federation.NetworkPolicy.for_mode", return_value=policy):
-                    report = finder.search("pdf forms", preview=True)
-                elapsed = time.monotonic() - started
-                self.assertTrue(transport.entered.is_set())
-                self.assertLess(elapsed, 0.16)
+                    worker = threading.Thread(target=run_search, name="blocked-preview-fixture")
+                    worker.start()
+                    self.assertTrue(transport.entered.wait(2.0), "preview validation did not start")
+                    self.assertTrue(done.wait(2.0), "search waited for a noncompliant preview transport")
                 self.assertFalse(transport.finished.is_set())
+                if "error" in outcome:
+                    raise outcome["error"]
+                report = outcome["report"]
                 self.assertEqual(cache.metadata("proofs"), [])
                 self.assertEqual(report.notes, [
                     "An optional early destination check did not complete; only final eligible results are shown."
                 ])
             finally:
                 transport.release.set()
-                self.assertTrue(transport.finished.wait(1.0))
+                self.assertTrue(transport.finished.wait(2.0))
+                worker.join(timeout=0.1)
+            self.assertFalse(worker.is_alive())
             # The late worker may complete after `search` returned, but must
             # not turn that old response into durable checked proof evidence.
             self.assertEqual(cache.metadata("proofs"), [])

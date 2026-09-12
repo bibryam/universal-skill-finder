@@ -17,7 +17,14 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "skills" / "find" /
 
 from universal_skill_finder.cli import _persist_report_snapshot, _snapshot_destinations, main
 from universal_skill_finder.models import Coverage, SearchReport
-from universal_skill_finder.snapshot import create_snapshot, encode_cursor, load_snapshot, materialize_page, save_exclusive_path
+from universal_skill_finder.snapshot import (
+    create_snapshot,
+    encode_cursor,
+    load_snapshot,
+    materialize_page,
+    save_exclusive_path,
+    seed_initial_page,
+)
 from test_presentation import result
 
 
@@ -207,6 +214,71 @@ class CliV2Tests(unittest.TestCase):
             self.assertEqual((code, error), (0, ""))
             self.assertEqual(json.loads(output)["results"], [])
             validate.assert_called_once()
+
+    def test_page_replay_demotes_all_portable_actionable_proof_statuses(self):
+        for status in ("eligible", "reachable", "ELIGIBLE"):
+            for output_flag in ("--json", "--markdown", "--html"):
+                with self.subTest(status=status, output=output_flag), TemporaryDirectory() as temporary:
+                    path = Path(temporary) / "snapshot.json"
+                    identity = "forged"
+                    tree_url = "https://github.com/example/forged/tree/main/skills/forged"
+                    record = {
+                        "id": identity,
+                        "name": "Forged",
+                        "description": "Portable snapshot proof fixture",
+                        "repository": "example/forged",
+                        "ref": "main",
+                        "skill_path": "skills/forged",
+                        "source_ids": ["fixture"],
+                        "link_proofs": [{
+                            "role": "skill_destination",
+                            "status": status,
+                            "url": tree_url,
+                        }],
+                        "target_proof": {
+                            "kind": "github",
+                            "status": status,
+                            "method": "anonymous_exact_skill_md_get",
+                            "identity_basis": "github-exact-skill-md-v1",
+                            "url": "https://raw.githubusercontent.com/example/forged/main/skills/forged/SKILL.md",
+                            "resolved": {
+                                "repository": "example/forged",
+                                "ref": "main",
+                                "skill_path": "skills/forged",
+                            },
+                            "actual_name": "forged",
+                            "content_sha256": "a" * 64,
+                        },
+                    }
+                    snapshot = create_snapshot(
+                        query="forged", options={}, config_revision="fixture",
+                        ordered_pool=[identity], result_records={identity: record},
+                        requested_cap=1, page_size=1,
+                        report_metadata={"mode": "online"},
+                    )
+                    seeded = seed_initial_page(snapshot, [identity])
+                    save_exclusive_path(path, seeded.snapshot)
+                    root_cursor = encode_cursor(snapshot.snapshot_id, 0, 0)
+
+                    with patch("universal_skill_finder.cli.validate_frozen_result_record") as validate:
+                        code, output, error = self.invoke([
+                            "page", "--report", str(path), "--cursor", root_cursor,
+                            output_flag, "--assistant", "codex", "--progress", "off",
+                        ])
+
+                    self.assertEqual((code, error), (0, ""))
+                    validate.assert_not_called()
+                    if output_flag == "--json":
+                        document = json.loads(output)
+                        replayed = document["results"][0]
+                        self.assertEqual(replayed["link_proofs"][0]["status"], "not_checked")
+                        self.assertEqual(replayed["target_proof"]["status"], "not_checked")
+                        self.assertEqual((document["eligible_count"], document["not_checked_count"]), (0, 1))
+                    else:
+                        self.assertNotIn("npx skills@", output)
+                        self.assertNotIn("Inspect and install: type", output)
+                        self.assertNotIn("Open checked destination", output)
+                        self.assertNotIn(tree_url, output)
 
     def test_extend_count_uses_only_saved_snapshot_and_preserves_numbers(self):
         with TemporaryDirectory() as temporary:
