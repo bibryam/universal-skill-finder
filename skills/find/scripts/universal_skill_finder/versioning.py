@@ -13,15 +13,15 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
-VERSION = "0.1.2"
+VERSION = "0.1.3"
 # Source-list, overlay and source-pack JSON retain their v1 shapes. Search
 # reports deliberately use their own v2 envelope below.
 SCHEMA_VERSION = 1
 SEARCH_REPORT_SCHEMA_VERSION = 2
 REPORT_FORMAT_VERSION = 2
 SNAPSHOT_SCHEMA_VERSION = 1
-RANKING_ALGORITHM_VERSION = "soft-native-v2"
-ADAPTER_CONTRACT_VERSION = 1
+RANKING_ALGORITHM_VERSION = "soft-native-v3"
+ADAPTER_CONTRACT_VERSION = 2
 CACHE_FORMAT_VERSION = 1
 
 _MAX_REVISION_FILES = 512

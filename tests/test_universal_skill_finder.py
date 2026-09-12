@@ -235,6 +235,31 @@ class ConfigTests(unittest.TestCase):
 
 
 class RepositoryAdapterTests(unittest.TestCase):
+    def test_repository_search_never_pads_with_zero_relevance_rows(self):
+        archive = tar_gz([
+            ("skills/anti-slop/SKILL.md", skill_markdown("anti-slop", "Remove formulaic AI prose")),
+            ("skills/antislop-human/SKILL.md", skill_markdown("antislop-human", "Make writing sound human")),
+            ("skills/academy-guide/SKILL.md", skill_markdown("academy-guide", "Recommend product courses")),
+            ("skills/algorithmic-art/SKILL.md", skill_markdown("algorithmic-art", "Create generative art")),
+            ("skills/brand-guidelines/SKILL.md", skill_markdown("brand-guidelines", "Apply brand colours")),
+        ])
+        source = {
+            "id": "repo", "kind": "repository", "adapter": "github-repo",
+            "repository": "acme/skills", "ref": "main", "include": ["**/SKILL.md"], "exclude": [],
+        }
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            adapter = GitHubRepoAdapter()
+            live = adapter.search(source, "anti-slop", 10, adapter_context(root, FakeHttp(archive=archive)))
+            offline_context = adapter_context(root, FakeHttp())
+            offline_context.offline = True
+            cached = adapter.search(source, "anti-slop", 10, offline_context)
+
+        expected = ["anti-slop", "antislop-human"]
+        self.assertEqual([item.name for item in live], expected)
+        self.assertEqual([item.name for item in cached], expected)
+        self.assertEqual([item.native_rank for item in live], [1, 2])
+
     def test_indexes_root_and_nested_skills_and_honors_excludes(self):
         archive = tar_gz([
             ("SKILL.md", skill_markdown("root-helper", "Root helper")),

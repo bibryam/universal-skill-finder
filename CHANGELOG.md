@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+## 0.1.3 - 2026-09-12
+
+- Stop repository and local catalogue searches from padding short result sets with zero-relevance skills; separator-only spellings such as `anti-slop` and `antislop` now match consistently.
+- Make adapter retrieval policy explicit, invalidate pre-policy caches, and require explainable lexical overlap before any provider result enters the public pool.
+- Keep provisional destination checks from granting final eligibility outside the bounded rank-ordered validation window, with a separate provisional request budget.
+- Prevent sparse seeded pages from repeating already-numbered results during continuation, and label pooled totals as candidates rather than verified matches.
+
 ## 0.1.2 - 2026-09-12
 
 - Render the canonical Universal Skill Finder repository URL directly in completed online report footers, without per-report verification or a misleading caveat.

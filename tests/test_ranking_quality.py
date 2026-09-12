@@ -57,7 +57,7 @@ class RankingQualityTests(unittest.TestCase):
         self.assertLess(merged[0].rank_fusion_score, merged[1].rank_fusion_score)
         self.assertEqual([row.ranking["components"]["skill_adoption"] for row in merged], [0.0, 0.0])
 
-    def test_semantic_registry_result_without_lexical_overlap_is_not_discarded(self):
+    def test_merge_stays_lossless_before_public_relevance_admission(self):
         rows = [
             occurrence("registry", "acroform", name="AcroForm assistant", description="Populate interactive documents"),
             occurrence("registry", "pdf-form", name="PDF forms", description="Fill forms", rank=2),

@@ -13,6 +13,7 @@ from universal_skill_finder.config import EffectiveConfig
 from universal_skill_finder.federation import UniversalSkillFinder
 from universal_skill_finder.models import Candidate
 from universal_skill_finder.ranking import ALGORITHM_VERSION, compatible_match_percent
+from universal_skill_finder.versioning import RANKING_ALGORITHM_VERSION
 
 
 def candidate(native_id: str, name: str, description: str, *, source: str = "catalog", path: str | None = None) -> Candidate:
@@ -41,6 +42,34 @@ class SelectedRankingTests(unittest.TestCase):
         self.assertEqual(evidence["description_groups"], ["humanize"])
         self.assertEqual(trace["components"]["lexical"], 0.95)
         self.assertEqual(compatible_match_percent("humanize", "Humanizer"), 100)
+
+    def test_ranking_version_matches_snapshot_contract(self):
+        self.assertEqual(ALGORITHM_VERSION, RANKING_ALGORITHM_VERSION)
+
+    def test_separator_only_compounds_are_full_lexical_matches(self):
+        self.assertEqual(compatible_match_percent("anti-slop", "AntiSlop"), 100)
+        self.assertEqual(compatible_match_percent("antislop", "anti-slop"), 100)
+        self.assertEqual(compatible_match_percent("anti-slop", "academy-guide"), 0)
+        compact = self.finder._merge([
+            candidate("antislop", "AntiSlop", "Remove generic AI prose"),
+        ], "anti-slop")[0]
+        split = self.finder._merge([
+            candidate("anti-slop", "anti-slop", "Remove generic AI prose"),
+        ], "anti-slop")[0]
+        self.assertEqual(compact.ranking["components"]["lexical"], split.ranking["components"]["lexical"])
+        self.assertEqual(compact.ranking["evidence"]["lexical_occurrence"]["name_phrase"], 1.0)
+        self.assertEqual(compact.text_match_percent, 100)
+
+    def test_exact_owner_repository_navigation_survives_relevance_admission(self):
+        row = candidate("tool", "Unrelated title", "General helper")
+        row.repository = "example/skills"
+        row.adapter = "github-repo"
+        self.assertEqual(compatible_match_percent(
+            "example/skills", row.name, row.description, row.skill_path or "", row.repository,
+        ), 100)
+        self.assertTrue(self.finder._relevance_admissible(row, "example/skills"))
+        merged = self.finder._merge([row], "example/skills")[0]
+        self.assertGreater(merged.ranking["components"]["lexical"], 0)
 
     def test_description_corroboration_is_recorded_as_a_tie_break(self):
         corroborated = candidate("one", "Humanizer", "Humanize text while preserving your voice")

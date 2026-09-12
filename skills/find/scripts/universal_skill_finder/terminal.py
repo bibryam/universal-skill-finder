@@ -17,7 +17,7 @@ AMBER = "\x1b[33m"
 RED = "\x1b[31m"
 
 _CARD = re.compile(r"^(\d+\.\s+)(.*?)(\s+;\s+.*)?$")
-_SUMMARY_STATS = re.compile(r"^\d+ (?:matches?|saved skills?)\b", re.IGNORECASE)
+_SUMMARY_STATS = re.compile(r"^\d+ (?:candidates?|matches?|saved skills?)\b", re.IGNORECASE)
 _LABEL = re.compile(
     r"\b(Sources|Metrics|Path|Location|Found on|Signals|Install(?: \([^\n)]*\))?|Local|"
     r"Resolved target|Verified target|Search|"

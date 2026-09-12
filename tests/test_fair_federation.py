@@ -47,6 +47,59 @@ class FairFederationTests(unittest.TestCase):
         )
         self.assertEqual([source["id"] for source in order], ["a-one", "b-one", "a-two", "b-two"])
 
+    def test_federation_rejects_zero_relevance_catalogue_rows_before_pooling(self):
+        class Adapter:
+            def search(self, source, query, limit, context):
+                row = Candidate(
+                    "academy-guide", "academy-guide", "Recommend product courses",
+                    source["id"], "repository", "github-repo",
+                    repository="acme/skills", ref="main", skill_path="skills/academy-guide",
+                )
+                row.metric_observations = [{
+                    "provider": "skills-sh", "name": "installs", "value": 50_000,
+                    "scope": "skill", "provenance": "fixture",
+                }]
+                return [row]
+
+        root = Path(self.temporary.name)
+        source = {
+            "id": "catalogue", "adapter": "github-repo", "kind": "repository",
+            "repository": "acme/skills", "ref": "main", "effective_enabled": True,
+            "enabled": True, "trust": "user-configured",
+        }
+        finder = UniversalSkillFinder(
+            EffectiveConfig(settings={}, packs=[], sources=[source], overlay_path=root / "sources.json", overlay={}),
+            cache=Cache(root / "relevance-cache"), http=object(),
+        )
+        finder.adapter_map = {"github-repo": Adapter()}
+        report = finder.search("anti-slop")
+
+        self.assertEqual((report.accepted_occurrences, report.unique_count), (0, 0))
+        self.assertEqual(report.coverage[0].result_count, 0)
+        self.assertEqual(report.snapshot["ordered_pool"], [])
+
+    def test_provider_selection_alone_cannot_admit_a_zero_overlap_result(self):
+        class Adapter:
+            def search(self, source, query, limit, context):
+                return [Candidate(
+                    "growth-loop-designer", "growth-loop-designer",
+                    "Design product-led growth, activation, and retention mechanics",
+                    source["id"], "registry", "skills-sh",
+                )]
+
+        root = Path(self.temporary.name)
+        source = registry_source("registry", "https://skills.sh")
+        finder = UniversalSkillFinder(
+            EffectiveConfig(settings={}, packs=[], sources=[source], overlay_path=root / "sources.json", overlay={}),
+            cache=Cache(root / "provider-relevance-cache"), http=object(),
+        )
+        finder.adapter_map = {"skills-sh": Adapter()}
+        report = finder.search("anti-slop")
+
+        self.assertEqual((report.accepted_occurrences, report.unique_count), (0, 0))
+        self.assertEqual(report.coverage[0].result_count, 0)
+        self.assertEqual(report.snapshot["ordered_pool"], [])
+
     def test_query_cache_partitions_nonsecret_effective_auth_mode(self):
         source = registry_source("auth-cache", "https://skills.sh")
         source["auth_env"] = "UNIVERSAL_SKILL_FINDER_TEST_OPTIONAL_TOKEN"
@@ -593,6 +646,54 @@ class FairFederationTests(unittest.TestCase):
         self.assertFalse(any(event.type == "early_verified" for event in quiet_events))
         self.assertEqual(report.snapshot["ordered_pool"], quiet_report.snapshot["ordered_pool"])
         self.assertEqual(preview_transport.calls, quiet_transport.calls)
+
+    def test_provisional_proof_cannot_promote_a_candidate_outside_final_scan(self):
+        class Adapter:
+            def search(self, source, query, limit, context):
+                if source["id"] == "fast":
+                    row = Candidate(
+                        "fast", "PDF helper", "General document helper",
+                        source["id"], "registry", "skills-sh",
+                    )
+                    row.listing_url = "https://skills.sh/fast"
+                    row.listing_role = "listing"
+                    row.source_evidence = {"expected_identity": {"id": "fast"}}
+                    return [row]
+                time.sleep(0.08)
+                return [
+                    Candidate(
+                        f"strong-{index}", f"PDF Forms {index:02d}", "Fill PDF forms",
+                        source["id"], "registry", "skills-sh",
+                    )
+                    for index in range(30)
+                ]
+
+        class Transport:
+            def __init__(self):
+                self.calls = 0
+
+            def request(self, _method, url, **_kwargs):
+                self.calls += 1
+                return AnonymousResponse(200, body=b'{"id":"fast"}', connection_address="8.8.8.8")
+
+        root = Path(self.temporary.name)
+        sources = [registry_source("fast", "https://skills.sh"), registry_source("slow", "https://skills.sh")]
+        finder = UniversalSkillFinder(
+            EffectiveConfig(settings={}, packs=[], sources=sources, overlay_path=root / "sources.json", overlay={}),
+            cache=Cache(root / "rank-window-cache"), validation_transport=Transport(),
+            validation_resolver=lambda _host, _port: ("8.8.8.8",),
+        )
+        finder.adapter_map = {"skills-sh": Adapter()}
+        with patch.object(finder, "_validate_ranked_pool", return_value=None):
+            report = finder.search("pdf forms")
+
+        last_id = report.snapshot["ordered_pool"][-1]
+        last = report.snapshot["result_records"][last_id]
+        self.assertEqual((len(report.snapshot["ordered_pool"]), last["name"]), (31, "PDF helper"))
+        self.assertGreater(finder.validation_transport.calls, 0)
+        self.assertEqual((report.results, report.eligible_count), ([], 0))
+        self.assertEqual(last["validation_status"], "not_checked")
+        self.assertFalse(any(proof.get("status") == "eligible" for proof in last["link_proofs"]))
 
     def test_verified_github_tree_is_inspection_only_without_exact_skill_content(self):
         class Adapter:

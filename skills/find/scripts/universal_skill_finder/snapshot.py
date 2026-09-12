@@ -457,8 +457,34 @@ def materialize_page(snapshot: SearchSnapshot, cursor: str | None, *, validate: 
     _check_materialized_state(snapshot, cursor, materialized)
     previous = snapshot.cursor_history.get(cursor)
     if previous is not None:
+        previous_ids = previous.get("ids")
+        if not isinstance(previous_ids, (list, tuple)) or not all(isinstance(item, str) for item in previous_ids):
+            raise SnapshotError("snapshot cursor history is invalid")
+        expected_numbers = list(range(materialized + 1, materialized + len(previous_ids) + 1))
+        actual_numbers = [snapshot.result_numbers.get(candidate_id) for candidate_id in previous_ids]
+        if actual_numbers != expected_numbers:
+            # Older sparse-page snapshots could append a result that had
+            # already been numbered on the seeded first page. Preserve the
+            # genuinely new part of that page and discard only those repeats.
+            repaired_ids = [
+                candidate_id for candidate_id in previous_ids
+                if isinstance(snapshot.result_numbers.get(candidate_id), int)
+                and snapshot.result_numbers[candidate_id] > materialized
+            ]
+            repaired_ids.sort(key=lambda candidate_id: snapshot.result_numbers[candidate_id])
+            repaired_numbers = [snapshot.result_numbers[candidate_id] for candidate_id in repaired_ids]
+            if (len(set(repaired_ids)) != len(repaired_ids)
+                    or repaired_numbers != list(range(materialized + 1, materialized + len(repaired_ids) + 1))):
+                raise SnapshotError("snapshot cursor history numbering is inconsistent")
+            safe_cursor = next_safe_cursor(snapshot)
+            next_cursor = safe_cursor if len(snapshot.result_numbers) < snapshot.requested_cap else None
+            return Page(tuple(repaired_ids), next_cursor, safe_cursor, snapshot, reused=True,
+                        scanned_count=int(previous.get("scanned_count", 0) or 0),
+                        is_exhausted=safe_cursor is None,
+                        has_pending=bool(previous.get("has_pending", False)),
+                        pending_detail=previous.get("pending_detail"))
         safe_cursor = next_safe_cursor(snapshot)
-        return Page(tuple(previous["ids"]), previous.get("next_cursor"),
+        return Page(tuple(previous_ids), previous.get("next_cursor"),
                     previous.get("resume_cursor", previous.get("next_cursor")), snapshot, reused=True,
                     scanned_count=int(previous.get("scanned_count", 0) or 0),
                     is_exhausted=safe_cursor is None,
@@ -476,6 +502,12 @@ def materialize_page(snapshot: SearchSnapshot, cursor: str | None, *, validate: 
     while (position < len(snapshot.ordered_pool) and len(selected) < cap
            and scanned_count < MAX_PAGE_SCAN):
         candidate_id = snapshot.ordered_pool[position]
+        if candidate_id in numbers:
+            # A seeded first page can be a sparse subset of the frozen pool.
+            # Continuation resumes at the earliest hole and must pass already
+            # numbered identities without emitting or validating them again.
+            position += 1
+            continue
         proof = ledger.get(candidate_id)
         if proof is None or (proof.get("status") == "not_checked" and not _is_deferred(proof)):
             if can_validate is not None and not _can_validate(can_validate, candidate_id, snapshot.result_records.get(candidate_id)):

@@ -114,6 +114,91 @@ class SnapshotPaginationTests(unittest.TestCase):
         with self.assertRaises(SnapshotError):
             seed_initial_page(seeded.snapshot, ["b"])
 
+    def test_sparse_seeded_results_never_reappear_on_continuation(self):
+        pool = ["hole", "first", "second", "tail"]
+        snapshot = create_snapshot(
+            query="pdf", options={}, config_revision="frozen", ordered_pool=pool,
+            result_records={candidate_id: {"id": candidate_id} for candidate_id in pool},
+            requested_cap=4, page_size=2,
+        )
+        seeded = seed_initial_page(snapshot, ["first", "second"])
+        with TemporaryDirectory() as temporary:
+            path = save_exclusive_path(Path(temporary) / "report.json", seeded.snapshot)
+            loaded = load_snapshot(path)
+        calls = []
+        page = materialize_page(
+            loaded, next_safe_cursor(loaded),
+            validate=lambda candidate_id: calls.append(candidate_id) or {"status": "eligible"},
+        )
+
+        self.assertEqual(page.ids, ("hole", "tail"))
+        self.assertEqual(calls, ["hole", "tail"])
+        self.assertEqual(dict(page.snapshot.result_numbers), {
+            "first": 1, "second": 2, "hole": 3, "tail": 4,
+        })
+
+    def test_legacy_sparse_history_replay_discards_only_previously_numbered_ids(self):
+        pool = ["hole", "first", "second", "tail"]
+        snapshot = create_snapshot(
+            query="pdf", options={}, config_revision="frozen", ordered_pool=pool,
+            result_records={candidate_id: {"id": candidate_id} for candidate_id in pool},
+            requested_cap=4, page_size=2,
+        )
+        seeded = seed_initial_page(snapshot, ["first", "second"])
+        continuation = next_safe_cursor(seeded.snapshot)
+        self.assertIsNotNone(continuation)
+        poisoned = replace(
+            seeded.snapshot,
+            result_numbers={"first": 1, "second": 2, "hole": 3},
+            validation_ledger={
+                "first": {"status": "eligible"}, "second": {"status": "eligible"},
+                "hole": {"status": "eligible"},
+            },
+            cursor_history={
+                **dict(seeded.snapshot.cursor_history),
+                continuation: {
+                    "ids": ["hole", "first"], "next_cursor": None,
+                    "resume_cursor": encode_cursor(seeded.snapshot.snapshot_id, 2, 4),
+                    "scanned_count": 2,
+                },
+            },
+        )
+        with TemporaryDirectory() as temporary:
+            path = save_exclusive_path(Path(temporary) / "report.json", poisoned)
+            loaded = load_snapshot(path)
+        replay = materialize_page(
+            loaded, continuation,
+            validate=lambda _candidate_id: self.fail("history replay must not validate"),
+        )
+        self.assertTrue(replay.reused)
+        self.assertEqual(replay.ids, ("hole",))
+        self.assertEqual(dict(replay.snapshot.result_numbers), {"first": 1, "second": 2, "hole": 3})
+        self.assertEqual(replay.next_cursor, next_safe_cursor(loaded))
+        tail = materialize_page(
+            replay.snapshot, replay.next_cursor,
+            validate=lambda candidate_id: {"status": "eligible"} if candidate_id == "tail" else self.fail(candidate_id),
+        )
+        self.assertEqual(tail.ids, ("tail",))
+        self.assertEqual(tail.snapshot.result_numbers["tail"], 4)
+
+    def test_numbered_sparse_ids_do_not_consume_validation_scan_budget(self):
+        seeded_ids = [f"seed-{index}" for index in range(10)]
+        fresh_ids = [f"fresh-{index}" for index in range(31)]
+        pool = [item for pair in zip(seeded_ids, fresh_ids[:10]) for item in pair] + fresh_ids[10:]
+        snapshot = create_snapshot(
+            query="pdf", options={}, config_revision="frozen", ordered_pool=pool,
+            requested_cap=40, page_size=10,
+        )
+        seeded = seed_initial_page(snapshot, seeded_ids)
+        calls = []
+        page = materialize_page(
+            seeded.snapshot, next_safe_cursor(seeded.snapshot),
+            validate=lambda candidate_id: calls.append(candidate_id) or {"status": "unavailable"},
+        )
+        self.assertEqual(page.scanned_count, 30)
+        self.assertEqual(calls, fresh_ids[:30])
+        self.assertFalse(page.is_exhausted)
+
     def test_page_scan_is_bounded_and_continues_after_terminal_deferrals(self):
         pool = [f"candidate-{index}" for index in range(40)]
         snapshot = create_snapshot(query="pdf", options={}, config_revision="frozen", ordered_pool=pool,

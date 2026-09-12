@@ -159,6 +159,26 @@ class ArchiveSecurityTests(unittest.TestCase):
 
 
 class LocalFilesystemSecurityTests(unittest.TestCase):
+    def test_local_search_never_returns_irrelevant_prevalidated_rows(self):
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            for name, description in (
+                ("anti-slop", "Remove formulaic AI prose"),
+                ("academy-guide", "Recommend product courses"),
+                ("algorithmic-art", "Create generative art"),
+                ("brand-guidelines", "Apply brand colours"),
+            ):
+                directory = root / name
+                directory.mkdir()
+                directory.joinpath("SKILL.md").write_bytes(
+                    f"---\nname: {name}\ndescription: {description}\n---\n".encode()
+                )
+            source = repository_source(adapter="local-directory", repository=None, path=str(root))
+            results = LocalDirectoryAdapter().search(source, "anti-slop", 10, context(root))
+
+        self.assertEqual([item.name for item in results], ["anti-slop"])
+        self.assertEqual(results[0].target_proof["status"], "eligible")
+
     def test_local_scan_ignores_symlink_files_and_directories(self):
         with TemporaryDirectory() as temp:
             root = Path(temp)
