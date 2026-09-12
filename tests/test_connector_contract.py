@@ -106,6 +106,7 @@ class AdapterCatalogueTests(unittest.TestCase):
         spec = ADAPTER_SPECS["skills-sh"]
         for changes in (
             {"kind": "shell"}, {"cache_policy": "execute"},
+            {"relevance_basis": "alphabetical_padding"},
             {"contract_version": ADAPTER_CONTRACT_VERSION + 1}, {"contract_version": True},
         ):
             with self.subTest(changes=changes), self.assertRaises(ValueError):
@@ -121,9 +122,12 @@ class AdapterCatalogueTests(unittest.TestCase):
     def test_cache_ownership_matches_existing_connector_semantics(self):
         self.assertEqual(ADAPTER_SPECS["github-repo"].cache_policy, "catalogue")
         self.assertEqual(ADAPTER_SPECS["local-directory"].cache_policy, "none")
+        self.assertEqual(ADAPTER_SPECS["github-repo"].relevance_basis, "local_lexical")
+        self.assertEqual(ADAPTER_SPECS["local-directory"].relevance_basis, "local_lexical")
         for spec in ADAPTER_SPECS.values():
             if spec.kind == "registry":
                 self.assertEqual(spec.cache_policy, "query")
+                self.assertEqual(spec.relevance_basis, "provider_query")
 
     def test_every_source_kind_is_checked_against_registration(self):
         for name, spec in ADAPTER_SPECS.items():

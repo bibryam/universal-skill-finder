@@ -3,7 +3,7 @@ name: find
 description: Find and compare agent skills across enabled registries, GitHub repositories, search indexes, and local directories; list, enable, or disable those sources. Return deterministic pages of verified, provenance-rich skill cards. Use for discovery and source management, never publishing or silently installing code.
 license: MIT
 metadata:
-  version: "0.1.2"
+  version: "0.1.3"
 ---
 
 # Universal Skill Finder
@@ -63,7 +63,7 @@ With a known assistant, search also performs a bounded, read-only installed-skil
 
 ### Compact terminal presentation
 
-Start with the generated scan-first summary: query on its own line, then unique matches and the number shown, followed by searched/cached source counts. Keep candidate/duplicate counts, verification partitions, page/cumulative totals and detailed source statuses in Notes and the source coverage section below the cards. A partial-coverage warning stays visible in the short summary. Found candidates are not all verified or install-ready. A continuation uses the saved pool and must not imply another source search.
+Start with the generated scan-first summary: query on its own line, then relevance-admitted candidates and the number shown, followed by searched/cached source counts. Every pooled candidate has explainable lexical overlap with the query; a provider returning a row is not enough by itself. Keep candidate/duplicate counts, verification partitions, page/cumulative totals and detailed source statuses in Notes and the source coverage section below the cards. A partial-coverage warning stays visible in the short summary. Candidates are not all verified or install-ready. A continuation uses the saved pool and must not imply another source search.
 
 Keep the generated scan-first cards: numbered skill heading, a useful description capped at 400 characters, one combined repository/skill-folder Location, every reporting source under Found on, source-labelled Signals, and numbered actions. Omit `main`; show any other branch or tag. The repository label opens only a separately checked repository root, the folder opens only the checked GitHub tree directory, and each eligible Found on label opens that source's checked native listing. Never link a heading or Location to raw `SKILL.md` content or mislabel a repository URL as a registry listing. If repository, folder or checked destination evidence is missing, preserve the generated fallback instead of inventing a location. Preserve local annotations and any difference between reported and resolved targets. One blank line separates cards; do not add repeated dividers or turn cards into tables.
 
@@ -91,7 +91,7 @@ The engine constructs commands only for exact compatible targets whose identity 
 
 Preserve the final single-line **[https://github.com/bibryam/universal-skill-finder](https://github.com/bibryam/universal-skill-finder)** link on completed online reports, including continuation pages. This exact canonical URL is application-owned and does not require per-report verification or an extra request. Do not add an ASCII frame, logo, code fence, verification caveat, or alternate label. Do not duplicate the footer or add it to JSON, help, source-management output, previews, offline output, or setup failures.
 
-`--preview` permits at most three early verified, unnumbered mini-previews on stderr while retrieval continues. They have no install command or final-rank claim. `--progress off` suppresses every interim event. `--offline` and `--dry-run` are separate no-live-search modes, not preview aliases.
+`--preview` permits at most three early verified, unnumbered mini-previews on stderr while retrieval continues. They have no install command, final-rank claim, or authority over the final validation window. `--progress off` suppresses every interim event. `--offline` and `--dry-run` are separate no-live-search modes, not preview aliases.
 
 ## Installing a selected result
 

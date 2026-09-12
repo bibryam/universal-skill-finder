@@ -54,6 +54,7 @@ class AdapterSpec:
     factory: type[Adapter]
     kind: Literal["registry", "repository"]
     cache_policy: Literal["query", "catalogue", "none"]
+    relevance_basis: Literal["provider_query", "local_lexical"] = "provider_query"
     required_fields: tuple[str, ...] = ()
     contract_version: int = ADAPTER_CONTRACT_VERSION
 

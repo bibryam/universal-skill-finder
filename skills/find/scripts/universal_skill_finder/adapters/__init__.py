@@ -34,6 +34,8 @@ def _catalogue(specs: Iterable[AdapterSpec]) -> Mapping[str, AdapterSpec]:
             raise ValueError(f"invalid adapter kind: {name}")
         if spec.cache_policy not in {"query", "catalogue", "none"}:
             raise ValueError(f"invalid adapter cache policy: {name}")
+        if spec.relevance_basis not in {"provider_query", "local_lexical"}:
+            raise ValueError(f"invalid adapter relevance basis: {name}")
         if type(spec.contract_version) is not int or spec.contract_version != ADAPTER_CONTRACT_VERSION:
             raise ValueError(f"unsupported adapter contract: {name}")
         if not callable(getattr(spec.factory, "search", None)):
@@ -46,18 +48,24 @@ def _catalogue(specs: Iterable[AdapterSpec]) -> Mapping[str, AdapterSpec]:
 # cache ownership. Extending this table requires reviewed local code, never a
 # module path or executable supplied by a registry or source pack.
 ADAPTER_SPECS = _catalogue((
-    AdapterSpec(SkillsShAdapter, "registry", "query", ("base_url",)),
-    AdapterSpec(SkillsMpAdapter, "registry", "query", ("base_url",)),
-    AdapterSpec(ClawHubAdapter, "registry", "query", ("base_url",)),
-    AdapterSpec(SkillHubPublicAdapter, "registry", "query", ("base_url",)),
-    AdapterSpec(SkillHubProAdapter, "registry", "query", ("base_url",)),
-    AdapterSpec(PolySkillAdapter, "registry", "query", ("base_url",)),
-    AdapterSpec(SkillsDirectoryAdapter, "registry", "query", ("base_url",)),
-    AdapterSpec(GitHubCodeSearchAdapter, "registry", "query", ("base_url", "auth_env")),
-    AdapterSpec(TesslAdapter, "registry", "query", ("base_url",)),
-    AdapterSpec(GitHubRepoAdapter, "repository", "catalogue", ("repository", "ref")),
-    AdapterSpec(LocalDirectoryAdapter, "repository", "none", ("path",)),
-    AdapterSpec(HttpJsonAdapter, "registry", "query", ("mapping",)),
+    AdapterSpec(SkillsShAdapter, "registry", "query", required_fields=("base_url",)),
+    AdapterSpec(SkillsMpAdapter, "registry", "query", required_fields=("base_url",)),
+    AdapterSpec(ClawHubAdapter, "registry", "query", required_fields=("base_url",)),
+    AdapterSpec(SkillHubPublicAdapter, "registry", "query", required_fields=("base_url",)),
+    AdapterSpec(SkillHubProAdapter, "registry", "query", required_fields=("base_url",)),
+    AdapterSpec(PolySkillAdapter, "registry", "query", required_fields=("base_url",)),
+    AdapterSpec(SkillsDirectoryAdapter, "registry", "query", required_fields=("base_url",)),
+    AdapterSpec(GitHubCodeSearchAdapter, "registry", "query", required_fields=("base_url", "auth_env")),
+    AdapterSpec(TesslAdapter, "registry", "query", required_fields=("base_url",)),
+    AdapterSpec(
+        GitHubRepoAdapter, "repository", "catalogue",
+        relevance_basis="local_lexical", required_fields=("repository", "ref"),
+    ),
+    AdapterSpec(
+        LocalDirectoryAdapter, "repository", "none",
+        relevance_basis="local_lexical", required_fields=("path",),
+    ),
+    AdapterSpec(HttpJsonAdapter, "registry", "query", required_fields=("mapping",)),
 ))
 
 

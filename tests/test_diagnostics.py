@@ -39,7 +39,7 @@ class DiagnosticTests(unittest.TestCase):
         self.assertEqual(code, 2)
         self.assertIn("example:EXAMPLE_CATALOG_TOKEN", output)
         self.assertIn("Code revision (skill): sha256:", output)
-        self.assertIn("Contracts: schema=1, adapter=1, cache=1", output)
+        self.assertIn("Contracts: schema=1, adapter=2, cache=1", output)
 
     def test_doctor_ignores_disabled_and_optional_credentials(self):
         for config in (configuration(enabled=False), configuration(optional=True)):

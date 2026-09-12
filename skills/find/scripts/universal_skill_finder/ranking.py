@@ -14,8 +14,8 @@ from typing import Any, Iterable
 from .models import RankingRecord
 
 
-ALGORITHM_VERSION = "soft-native-v2"
-CANDIDATE_ID = "training-selected-title-description-adoption-v2"
+ALGORITHM_VERSION = "soft-native-v3"
+CANDIDATE_ID = "training-selected-title-description-adoption-v3"
 
 _TOKEN_RE = re.compile(r"c\+\+|c#|\.net|node\.js|[a-z0-9]+(?:[.#][a-z0-9]+)*", re.IGNORECASE)
 _SEPARATORS_RE = re.compile(r"[\\/_-]+")
@@ -48,40 +48,84 @@ def word_family(token: str) -> str:
     return token
 
 
-def compatible_match_percent(query: str, name: str, description: str = "", path: str = "") -> int:
-    """Legacy-compatible retrieval score using the selected token families.
+def compatible_match_percent(
+    query: str, name: str, description: str = "", path: str = "", repository: str = "",
+) -> int:
+    """Compatible lexical score for retrieval, admission, and diagnostics.
 
-    It is intentionally only a local catalogue retrieval ordering signal.  The
-    final score is calculated by :func:`rank_results` from a merged occurrence.
+    The final ranking score is still calculated by :func:`rank_results` from a
+    merged occurrence.
     """
     query_groups = _query_groups(query)
     if not query_groups:
         return 0
+    query_tokens = compatible_tokens(query)
     available = set()
     for field in (name, description, path):
-        available.update(word_family(token) for token in compatible_tokens(field))
-    return int(round(100 * len(query_groups & available) / len(query_groups)))
+        field_tokens = compatible_tokens(field)
+        available.update(word_family(token) for token in field_tokens)
+        if _compact_phrase_present(query_tokens, field_tokens):
+            available.update(query_groups)
+    score = int(round(100 * len(query_groups & available) / len(query_groups)))
+    if "/" in query and len(query_tokens) == 2 and compatible_tokens(repository) == query_tokens:
+        return 100
+    return score
 
 
 def _query_groups(query: str) -> set[str]:
     return {word_family(token) for token in compatible_tokens(query)}
 
 
-def _field_groups(value: object, query_groups: set[str]) -> set[str]:
-    return {word_family(token) for token in compatible_tokens(value)} & query_groups
+def _compact_phrase_present(query_tokens: list[str], field_tokens: list[str]) -> bool:
+    """Match separator-only spelling differences such as anti-slop/antislop."""
+    query_families = [word_family(token) for token in query_tokens]
+    field_families = [word_family(token) for token in field_tokens]
+    compact_query = "".join(query_families)
+    if len(compact_query) < 6:
+        return False
+    for start in range(len(field_families)):
+        compact_field = ""
+        for token in field_families[start:]:
+            compact_field += token
+            if compact_field == compact_query:
+                return True
+            if len(compact_field) >= len(compact_query):
+                break
+    return False
+
+
+def _field_groups(value: object, query_groups: set[str], query_tokens: list[str]) -> set[str]:
+    field_tokens = compatible_tokens(value)
+    groups = {word_family(token) for token in field_tokens} & query_groups
+    if _compact_phrase_present(query_tokens, field_tokens):
+        groups.update(query_groups)
+    return groups
 
 
 def _phrase_present(query_tokens: list[str], field_tokens: list[str]) -> bool:
-    if not query_tokens or len(query_tokens) > len(field_tokens):
+    if not query_tokens:
+        return False
+    if _compact_phrase_present(query_tokens, field_tokens):
+        return True
+    if len(query_tokens) > len(field_tokens):
         return False
     query_families = [word_family(token) for token in query_tokens]
     field_families = [word_family(token) for token in field_tokens]
     width = len(query_families)
-    return any(field_families[index:index + width] == query_families for index in range(len(field_families) - width + 1))
+    return any(
+        field_families[index:index + width] == query_families
+        for index in range(len(field_families) - width + 1)
+    )
 
 
 def _complete_name_equivalent(query_tokens: list[str], name_tokens: list[str]) -> bool:
-    return bool(query_tokens) and [word_family(token) for token in query_tokens] == [word_family(token) for token in name_tokens]
+    if not query_tokens:
+        return False
+    query_families = [word_family(token) for token in query_tokens]
+    name_families = [word_family(token) for token in name_tokens]
+    return query_families == name_families or (
+        len("".join(query_families)) >= 6 and "".join(query_families) == "".join(name_families)
+    )
 
 
 def _navigation_identity(query: str, occurrence: dict[str, Any]) -> float:
@@ -103,9 +147,9 @@ def _occurrence_lexical(query: str, occurrence: dict[str, Any]) -> tuple[float, 
     name_tokens = compatible_tokens(occurrence.get("name"))
     description_tokens = compatible_tokens(occurrence.get("description"))
     path_tokens = compatible_tokens(occurrence.get("skill_path"))
-    name_groups = _field_groups(occurrence.get("name"), query_groups)
-    description_groups = _field_groups(occurrence.get("description"), query_groups)
-    path_groups = _field_groups(occurrence.get("skill_path"), query_groups)
+    name_groups = _field_groups(occurrence.get("name"), query_groups, query_tokens)
+    description_groups = _field_groups(occurrence.get("description"), query_groups, query_tokens)
+    path_groups = _field_groups(occurrence.get("skill_path"), query_groups, query_tokens)
     denominator = float(len(query_groups))
     name_coverage = len(name_groups) / denominator
     description_coverage = len(description_groups) / denominator

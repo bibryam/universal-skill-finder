@@ -42,7 +42,7 @@ bundled defaults + sources.json
 
 Adapters are code-owned. Source configuration cannot name a Python module, shell command, executable, or downloaded plugin. This is deliberate. An arbitrary executable adapter would turn a search query into remote code execution authority.
 
-`adapters/__init__.py` contains one immutable `ADAPTER_SPECS` catalogue. Each typed descriptor declares its factory, source kind, required fields, cache policy, and contract version. Configuration validation, source-pack kind inference, runtime construction, and federation cache routing use it. Add one registration for a new protocol; do not maintain parallel allowlists.
+`adapters/__init__.py` contains one immutable `ADAPTER_SPECS` catalogue. Each typed descriptor declares its factory, source kind, required fields, cache policy, relevance basis, and contract version. Configuration validation, source-pack kind inference, runtime construction, federation cache routing, and result admission use it. Add one registration for a new protocol; do not maintain parallel allowlists.
 
 The `Adapter.search(source, query, limit, context) -> list[Candidate]` contract returns at most the requested limit in native order or raises `SourceUnavailable` for a recognized failure. Instances are shared across concurrent source calls and must be stateless. The context supplies guarded transport, cache, settings, and offline/refresh flags. Query caching belongs to federation, catalogue caching to repository connectors, and local reads are uncached. Federation validates candidates and rebinds source authority.
 
@@ -79,7 +79,7 @@ Ordinary enable/disable choices use one configuration file, defaulting to `~/.co
 
 `sources config-path` is read-only. `sources init` explicitly materializes all known entries with existing choices. `sources enable|disable ID` writes the same list. Searches and lists never initialize or rewrite it. The older `repositories` command and `--repository` flag remain aliases for `sources` and `--source`; result schema-1 fields retain their existing names.
 
-User choices live in `universal-skill-finder/sources.json` unless an explicit path or `UNIVERSAL_SKILL_FINDER_CONFIG` is supplied. A file must contain only one choice format. Explicit saves normalize choices to `sources` while retaining advanced `custom_sources`, `custom_packs`, and `pack_overrides`. A disabled pack still requires explicit pack enablement. Public search reports are schema 2; source candidate, cache, and adapter contracts remain version 1 with additive evidence fields. See [configuration](configuration.md#files-and-precedence) for exact precedence.
+User choices live in `universal-skill-finder/sources.json` unless an explicit path or `UNIVERSAL_SKILL_FINDER_CONFIG` is supplied. A file must contain only one choice format. Explicit saves normalize choices to `sources` while retaining advanced `custom_sources`, `custom_packs`, and `pack_overrides`. A disabled pack still requires explicit pack enablement. Public search reports are schema 2; source candidate and cache shapes remain version 1, while the adapter contract is version 2. See [configuration](configuration.md#files-and-precedence) for exact precedence.
 
 ## Federation pipeline
 
@@ -91,8 +91,8 @@ Before this pipeline, the plugin's POSIX or PowerShell launcher checks Python 3.
 4. In `--dry-run`, report planned hosts without sending the query.
 5. Otherwise, admit runnable sources fairly by source class and execute them under the shared process supervisor, deadline, request/byte budget, per-origin permit, and API quota contracts. Supported process-isolation paths can terminate and reap blocked children; deterministic injected test adapters remain in-process.
 6. Isolate every source failure. Freeze the accepted pool at collection cutoff; late or preempted work remains explicit coverage rather than evidence that the source is down.
-7. Normalize source results into `Candidate` records and merge strong identities, then narrowly reconcile pathless repository matches.
-8. Rank the frozen merged pool with `soft-native-v2`, retaining component evidence and deterministic tie-breaks.
+7. Normalize source results into `Candidate` records and apply the adapter's code-owned retrieval contract. Repository and local catalogues are never padded to a requested limit. Every source must then pass the same positive compatible lexical floor before a candidate enters the public pool; provider selection or destination validity alone is not relevance evidence. Merge strong identities and narrowly reconcile pathless repository matches.
+8. Rank the frozen merged pool with `soft-native-v3`, retaining component evidence and deterministic tie-breaks.
 9. Validate exact public destinations under the remaining shared proof budget. Resolve exact GitHub `SKILL.md` content for target identity and install evidence, then validate the corresponding browsable GitHub directory and repository root as separate destinations under their reviewed GitHub contracts. Validate contributing native registry listings separately so successful target proof does not discard provenance links. Use authoritative branch/root checks only when needed; otherwise retain a reviewed inspection destination. Replenish failed identities from the same frozen rank order, checking at most 30 identities per page.
 10. Return schema-2 results, validation partitions, progress/provenance, and ordered source coverage. A saved snapshot can continue or explicitly extend its cap without rerunning discovery.
 11. For a known assistant, annotate the complete frozen result pool from one bounded local installed-skill inventory unless explicitly skipped. These local observations never enter ranking, source candidates or query caches.
@@ -119,7 +119,7 @@ Canonical URL identities retain query, fragment, and semicolon parameters becaus
 
 ## Ranking
 
-`soft-native-v2` combines bounded lexical evidence from the title, description, and path with a bounded contribution only from typed, skill-scoped skills.sh install observations. A query term family contributes once. Unknown native order, repository stars, generic popularity, security grades, and source overlap contribute zero. Deterministic title/description corroboration, name, and stable identity settle ties. The report retains algorithm version, component scores, tie-breaks, and the evidence actually used.
+`soft-native-v3` combines bounded lexical evidence from the title, description, and path with a bounded contribution only from typed, skill-scoped skills.sh install observations. Separator-only compound spellings such as `anti-slop` and `antislop` are equivalent. At least one compatible query term must be present before a result can enter the public pool. A query term family contributes once. Unknown native order, provider selection alone, destination validity, repository stars, generic popularity, security grades, and source overlap contribute zero. Deterministic title/description corroboration, name, and stable identity settle ties. The report retains algorithm version, component scores, tie-breaks, and the evidence actually used.
 
 Reciprocal rank fusion remains a schema compatibility diagnostic, not an ordering input. This avoids treating correlated registries as independent votes or normalizing incompatible metrics into a universal score. Lexical evidence is still not semantic confidence; destination proof establishes reachability and identity, not capability quality or safety.
 

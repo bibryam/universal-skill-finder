@@ -72,7 +72,7 @@ This example is illustrative, not a claim about a real registry or repository:
       "result_number": 1,
       "validation_status": "eligible",
       "ranking": {
-        "algorithm_version": "soft-native-v2",
+        "algorithm_version": "soft-native-v3",
         "score": 0.91,
         "components": {"lexical": 0.84, "skill_installs": 0.07}
       },
@@ -182,7 +182,7 @@ The abbreviated example omits `provenance`. Real reports include release, code, 
 | `warnings` | Distinct warnings raised by source adapters |
 | `occurrences` | Every normalized source candidate retained for audit and comparison |
 | `installed` | Fresh local installed-skill evidence; empty when not checked, never trusted from source/cache metadata |
-| `ranking` | `soft-native-v2` version, score, components, tie-breaks and evidence actually used |
+| `ranking` | `soft-native-v3` version, score, components, tie-breaks and evidence actually used |
 | `link_proofs` | Checked human-navigation evidence for GitHub directories, repository roots, and source listings; only an `eligible` or explicitly display-accepted proof for that exact destination authorizes its displayed link |
 | `target_proof` | Reported versus resolved target identity and exact raw `SKILL.md` content/path evidence; this does not itself authorize a displayed link |
 | `attributions` | Eligible, independently proof-gated native destinations; `source_ids` retains every contributor, including sources without a verified listing |
@@ -197,7 +197,7 @@ For an occurrence from the `tessl` adapter, the same column may show separately 
 
 Tessl skill-containing packages may appear as explicitly labelled bundle candidates with a package listing URL and inspection warning. Their package name/version is not an exact skill name/ref, and they have no generated install command. `tessl_metric_scope` distinguishes `skill` from `bundle`; package assessments stay in JSON and are not displayed as individual-skill quality scores. `tessl_bundle_version` identifies the inspected package version. Individual GitHub skill rows retain their repository/path for deduplication and a separate connector-reviewed Tessl `/registry/skills/github/OWNER/REPOSITORY/SKILL` listing candidate. That source listing remains unlinked until its exact page confirms the encoded repository and skill name; unresolved GitHub refs still require inspection.
 
-Configured GitHub repository sources can use separately cached metadata containing `github_stars`, `github_stars_scope: "repository"`, `github_stars_repository`, and `github_stars_observed_at`. Discovery never initiates or waits for a stars request; the current implementation only reads a fresh existing metadata entry. Stars describe the repository, not each skill, and never affect `soft-native-v2` ranking.
+Configured GitHub repository sources can use separately cached metadata containing `github_stars`, `github_stars_scope: "repository"`, `github_stars_repository`, and `github_stars_observed_at`. Discovery never initiates or waits for a stars request; the current implementation only reads a fresh existing metadata entry. Stars describe the repository, not each skill, and never affect `soft-native-v3` ranking.
 
 ## Installed-skill evidence
 
@@ -239,7 +239,7 @@ URL identities retain query, fragment, and semicolon parameters. Query order is 
 
 ## Ranking rules
 
-`soft-native-v2` is the selected algorithm. It combines bounded lexical evidence from name, description and path with a bounded contribution only from typed, skill-scoped skills.sh install observations. A query term family contributes once. Unknown native order, repository stars, generic popularity, security grades and source overlap contribute zero. Deterministic title/description corroboration, name and stable identity settle ties. `ranking.components`, `ranking.tie_breaks`, and `ranking.evidence` record the actual decision inputs. RRF remains a compatibility diagnostic only.
+`soft-native-v3` is the selected algorithm. It combines bounded lexical evidence from name, description and path with a bounded contribution only from typed, skill-scoped skills.sh install observations. Separator-only compounds such as `anti-slop` and `antislop` are equivalent. At least one compatible query term must be present before a result can enter the public pool. A query term family contributes once. Provider selection alone, destination validity, unknown native order, repository stars, generic popularity, security grades and source overlap contribute zero. Deterministic title/description corroboration, name and stable identity settle ties. `ranking.components`, `ranking.tie_breaks`, and `ranking.evidence` record the actual decision inputs. RRF remains a compatibility diagnostic only.
 
 ## Coverage records
 
@@ -249,7 +249,7 @@ URL identities retain query, fragment, and semicolon parameters. Query order is 
 | `enabled` | Effective configured enablement, independent of query selection or source availability |
 | `status` | Completion, selection, cache, or failure state |
 | `incomplete_results` | Boolean, independent of `status`: upstream search or file validation was incomplete; default false for older compatible reports |
-| `result_count` | Candidates returned before federation |
+| `result_count` | Candidates admitted from this source after its code-owned relevance policy |
 | `elapsed_ms` | Source work time |
 | `detail` | Bounded diagnostic text, if any |
 | `cache_age_seconds` | Cache age for cached results, if known |

@@ -438,7 +438,7 @@ class PresentationV2Tests(unittest.TestCase):
         self.assertIn("Early verified preview", preview)
         self.assertNotIn("#1", preview)
         self.assertEqual(render_preview(SimpleNamespace(type="early_verified", name="bad", link_proof=proof("skill", "inconclusive", "https://example.test/bad"))), "")
-        explanation = render_explanation(SimpleNamespace(ranking_algorithm_version="soft-native-v2"), report().results[0])
+        explanation = render_explanation(SimpleNamespace(ranking_algorithm_version="soft-native-v3"), report().results[0])
         self.assertIn("Explain #4", explanation)
 
     def test_source_management_column_order_and_symbols(self):

@@ -29,7 +29,7 @@ flowchart TD
     I --> L
     J --> L
     P --> L
-    L --> M[Identity merge + soft-native-v2 ranking]
+    L --> M[Relevance admission + identity merge + soft-native-v3 ranking]
     M --> R[Bounded anonymous destination proof]
     R --> S[Frozen snapshot + stable pagination]
     S --> Q[Optional read-only installed-skill annotation]
@@ -66,7 +66,7 @@ Python 3.10+ and working SSL are the only search-runtime prerequisites. POSIX an
 
 Many sources can share one connector. There is no need to write an adapter for another GitHub repository or compatible GET/JSON API. Conversely, an API with a different authentication, pagination, or response contract should not be forced through generic mappings.
 
-`ADAPTER_SPECS` is the single code-owned registration point. Each frozen `AdapterSpec` declares its factory, source kind, required fields, cache policy, and adapter-contract version. Validation, factory construction, source-pack kind inference, and federation cache routing use that catalogue. Duplicate IDs, unknown connectors, incompatible contract versions, and kind mismatches fail early. Source packs cannot import Python modules or supply executables.
+`ADAPTER_SPECS` is the single code-owned registration point. Each frozen `AdapterSpec` declares its factory, source kind, required fields, cache policy, relevance basis, and adapter-contract version. Validation, factory construction, source-pack kind inference, federation cache routing, and result admission use that catalogue. Duplicate IDs, unknown connectors, incompatible contract versions, and kind mismatches fail early. Source packs cannot import Python modules or supply executables.
 
 ## The connector contract
 
@@ -111,7 +111,7 @@ The request pipeline is: validate configuration, resolve direct/pack enablement,
 - Dry runs show planned destinations without contacting them. GitHub repository discovery uses `codeload.github.com`; optional stars are read only from a separate fresh cache and never trigger a metadata request.
 - Every configured source gets a coverage record, including failures, disabled/excluded sources, offline misses, cached answers, and successful zero-match responses.
 - Names alone never identify a skill. Repository/path and hosted identity take precedence over a canonical URL. URL query parameters, fragments, and semicolon parameters are retained because they can distinguish skills.
-- `soft-native-v2` ranks lexical title/description/path evidence plus a bounded contribution from typed, skill-scoped skills.sh installs. Unknown native order, repository stars, generic popularity and source overlap do not increase the score. Deterministic evidence and tie-breaks are retained per result.
+- `soft-native-v3` requires positive compatible lexical evidence, then ranks title/description/path evidence plus a bounded contribution from typed, skill-scoped skills.sh installs. It treats separator-only compounds such as `anti-slop` and `antislop` as equivalent. Provider selection or destination validity alone cannot admit a result. Unknown native order, repository stars, generic popularity and source overlap do not increase the score. Deterministic evidence and tie-breaks are retained per result.
 - The accepted pool freezes at collection cutoff. Final proof replenishes in frozen rank order; unavailable or unchecked identities do not occupy normal cards.
 - Default output materializes up to 10 verified cards. `--count` caps the snapshot and `--page-size` controls each page. Explicit snapshots preserve ordering, proof evidence and stable numbering; continuation never reruns source queries. `page --extend-count N` can explicitly raise a saved snapshot's cap to at most 100 while consuming only its frozen pool.
 - Card fields are skill name, description, Location, Found on, Signals, and the inspection/install action. Raw `SKILL.md` proves content identity only. The GitHub skill directory, repository root, and each native source listing require separate destination proofs before their exact URLs become clickable. Search never runs a displayed command.
@@ -207,7 +207,7 @@ Version numbers describe compatibility. Revision hashes identify content. They a
 |---|---|---|
 | Release | `VERSION` in `versioning.py` | Every distributed release; synchronize skill metadata, both plugin manifests, and the Claude marketplace |
 | Public JSON schema | `1` | Incompatible report/config/source-pack schema changes; additive fields remain compatible |
-| Adapter contract | `1` | Incompatible connector interface or normalization semantics |
+| Adapter contract | `2` | Incompatible connector interface or normalization semantics |
 | Cache format | `1` | Incompatible persisted envelope/payload changes |
 | Code revision | `sha256:…` | Engine, bundled instructions, launchers, references, or bundled example-pack bytes change |
 | Catalogue revision | `sha256:…` | Canonical bundled catalogue JSON content changes |

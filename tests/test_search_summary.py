@@ -54,7 +54,7 @@ class SearchSummaryTests(unittest.TestCase):
         single.unique_count = 1
         for format in ("markdown", "plain"):
             text = render_report(single, format=format)
-            self.assertIn("1 match", text)
+            self.assertIn("1 candidate", text)
             self.assertIn("Sources:", text)
             self.assertIn("1 searched", text)
             single.continuation_page = True
@@ -71,7 +71,7 @@ class SearchSummaryTests(unittest.TestCase):
         before_notes, notes = text.split("## Notes", 1)
 
         self.assertIn("Search: **anti-slop**", before_notes)
-        self.assertIn("**75 matches** · **10 shown**", before_notes)
+        self.assertIn("**75 candidates** · **10 shown**", before_notes)
         self.assertIn("Sources: **5 searched** · **4 cached**", before_notes)
         self.assertNotIn("81 candidates →", before_notes)
         self.assertNotIn("10 with verified destinations", before_notes)
@@ -138,7 +138,7 @@ class SearchSummaryTests(unittest.TestCase):
     def test_html_uses_the_same_compact_header_and_detail_notes(self):
         html = render_report(report(), format="html")
 
-        self.assertIn("<strong>anti-slop</strong> · <strong>9 sources (5 searched, 4 cached)</strong> · <strong>75 found</strong> · <strong>showing 10</strong>", html)
+        self.assertIn("<strong>anti-slop</strong> · <strong>9 sources (5 searched, 4 cached)</strong> · <strong>75 candidates</strong> · <strong>showing 10</strong>", html)
         self.assertIn("Candidates: 81 accepted · 75 unique skills · 6 duplicate entries merged.", html)
         self.assertIn("Sources: 5 searched · 4 cached · 0 failed · 0 not searched.", html)
 

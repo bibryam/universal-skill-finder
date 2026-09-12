@@ -47,7 +47,7 @@ class TerminalStyleTests(unittest.TestCase):
             "",
             "Search: anti-slop",
             "",
-            "75 matches ; 10 shown",
+            "75 candidates ; 10 shown",
             "Sources: 5 searched ; 4 cached",
             "1. humanizer",
             "Location: owner/repo › skills/humanizer",
@@ -62,7 +62,7 @@ class TerminalStyleTests(unittest.TestCase):
         self.assertIn("\x1b[1;36mUniversal Skill Finder\x1b[0m", styled)
         self.assertIn("1. \x1b[1;36mhumanizer\x1b[0m", styled)
         self.assertIn("\x1b[1mSearch\x1b[0m: anti-slop", styled)
-        self.assertIn("\x1b[1m75 matches ; 10 shown\x1b[0m", styled)
+        self.assertIn("\x1b[1m75 candidates ; 10 shown\x1b[0m", styled)
         self.assertIn("\x1b[1mSources\x1b[0m: 5 searched ; 4 ", styled)
         self.assertIn("\x1b[33mcached\x1b[0m", styled)
         self.assertIn("\x1b[1mLocation\x1b[0m:", styled)

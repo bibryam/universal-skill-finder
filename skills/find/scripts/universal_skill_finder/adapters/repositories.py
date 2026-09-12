@@ -435,11 +435,13 @@ class GitHubRepoAdapter:
         ranked: list[tuple[int, Candidate]] = []
         for candidate in catalog:
             # Use the selected ranker's compatible word families before the
-            # bounded local/repository catalogue is truncated.  Keep zero-match
-            # rows at the tail: a caller's limit must not turn source retrieval
-            # into an undocumented hard lexical exclusion.
-            score = compatible_match_percent(query, candidate.name, candidate.description, candidate.skill_path or "")
-            ranked.append((score, candidate))
+            # bounded repository catalogue is truncated. The limit is a maximum,
+            # never a reason to pad results with unrelated catalogue entries.
+            score = compatible_match_percent(
+                query, candidate.name, candidate.description, candidate.skill_path or "", candidate.repository or "",
+            )
+            if score > 0:
+                ranked.append((score, candidate))
         ranked.sort(key=lambda item: (-item[0], item[1].name.lower(), item[1].skill_path or ""))
         results = [candidate for _, candidate in ranked[:limit]]
         for rank, candidate in enumerate(results, 1):
@@ -517,8 +519,9 @@ class LocalDirectoryAdapter:
                 "identity_basis": "local_relative_path_content_sha256",
             }]
             score = compatible_match_percent(query, candidate.name, candidate.description, candidate.skill_path or "")
-            ranked.append((score, candidate))
             indexed += 1
+            if score > 0:
+                ranked.append((score, candidate))
         ranked.sort(key=lambda item: (-item[0], item[1].name.lower()))
         results = [candidate for _, candidate in ranked[:limit]]
         for rank, candidate in enumerate(results, 1):

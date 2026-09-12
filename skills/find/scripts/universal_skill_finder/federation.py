@@ -23,11 +23,12 @@ from .config import ConfigurationError, EffectiveConfig
 from .health import HealthScope, HealthStore
 from .http import FinderHttpError, HttpClient
 from .models import Candidate, Coverage, LinkProof, ProgressEvent, Result, SearchReport, UNSAFE_LOCATION_WARNING
-from .ranking import RankTrace, rank_results
+from .ranking import RankTrace, compatible_match_percent, rank_results
 from .proof_workflow import validate_record
 from .runtime import Deadline, NetworkPolicy, PermitPool, RequestBudget, RuntimeLimitError, SharedNetworkResources, SourceJob, WorkerSupervisor, emit_progress
+from .snapshot import MAX_PAGE_SCAN
 from .source_presentation import public_source_url
-from .text import clean_text, occurrence_aliases, safe_skill_path, stable_result_id, text_match_percent, weak_occurrence_aliases
+from .text import clean_text, occurrence_aliases, safe_skill_path, stable_result_id, weak_occurrence_aliases
 from .versioning import ADAPTER_CONTRACT_VERSION, effective_config_revision, release_metadata
 from .validation import (
     AnonymousPublicTransport, Destination, TargetResolutionCache, github_skill_destination,
@@ -220,6 +221,22 @@ class UniversalSkillFinder:
                         publish_lock=publish_lock,
                     )
                 return proof
+
+    @staticmethod
+    def _relevance_admissible(candidate: Candidate, query: str) -> bool:
+        """Require explainable overlap after the code-owned retrieval step."""
+        spec = ADAPTER_SPECS.get(candidate.adapter)
+        if spec is None:
+            return False
+        return compatible_match_percent(
+            query, candidate.name, candidate.description, candidate.skill_path or "", candidate.repository or "",
+        ) > 0
+
+    @staticmethod
+    def _result_relevance_admissible(result: Result) -> bool:
+        """Defend the frozen pool even if a connector bypassed source admission."""
+        lexical = result.ranking.get("components", {}).get("lexical")
+        return type(lexical) in {int, float} and lexical > 0
 
     @staticmethod
     def _host(source: dict[str, Any]) -> str | None:
@@ -793,6 +810,11 @@ class UniversalSkillFinder:
             validation_requests=policy.validation_requests,
             github_api_requests=policy.github_api_requests,
         )
+        provisional_budget: Any = RequestBudget(
+            requests=policy.provisional_validation_requests,
+            validation_requests=policy.provisional_validation_requests,
+            github_api_requests=policy.provisional_github_api_requests,
+        )
         validation_permits = PermitPool(policy)
         shared_resources: SharedNetworkResources | None = None
         source_budget: RequestBudget | None = None
@@ -805,7 +827,6 @@ class UniversalSkillFinder:
         preview_candidates: list[Candidate] = []
         preview_attempted: set[str] = set()
         preview_futures: dict[Future[Any], Result] = {}
-        preview_proofs: dict[str, LinkProof] = {}
         preview_failures: set[str] = set()
         preview_executor = ThreadPoolExecutor(
             max_workers=policy.provisional_validation_workers,
@@ -826,7 +847,7 @@ class UniversalSkillFinder:
         def schedule_previews() -> None:
             if preview_executor is None or len(preview_attempted) >= policy.provisional_identities:
                 return
-            for item in self._merge(list(preview_candidates), query):
+            for item in filter(self._result_relevance_admissible, self._merge(list(preview_candidates), query)):
                 if item.id in preview_attempted:
                     continue
                 destinations, _expected = self._validation_destinations([item])
@@ -839,7 +860,7 @@ class UniversalSkillFinder:
                 preview_attempted.add(item.id)
                 future = preview_executor.submit(
                     self._cached_destination_proof, destination, phase="provisional",
-                    budget=validation_budget, permits=validation_permits, deadline=provisional_deadline,
+                    budget=provisional_budget, permits=validation_permits, deadline=provisional_deadline,
                     can_publish=can_publish_preview,
                     publish_lock=preview_publication_lock,
                 )
@@ -859,7 +880,6 @@ class UniversalSkillFinder:
                     # fixed report diagnostic, never arbitrary exception text.
                     preview_failures.add(item.id)
                     continue
-                preview_proofs[item.id] = proof
                 if proof.status == "eligible" and emit_events:
                     emit_progress(progress_callback, ProgressEvent(
                         "early_verified", query=query, proof_id=item.id,
@@ -995,6 +1015,11 @@ class UniversalSkillFinder:
                                 coverage: Coverage | None, failure: Exception | None = None) -> None:
                 nonlocal finished_sources
                 if failure is None and candidates is not None and coverage is not None:
+                    candidates = [
+                        candidate for candidate in candidates
+                        if self._relevance_admissible(candidate, query)
+                    ]
+                    coverage.result_count = len(candidates)
                     if supervisor.publish(source["id"], (candidates, coverage)):
                         coverage.admission_status = "admitted"
                         coverage.live_status = coverage.live_status or coverage.status
@@ -1199,7 +1224,8 @@ class UniversalSkillFinder:
                         future.cancel()
                         preview_failures.add(item.id)
                         continue
-                    preview_proofs[item.id] = proof
+                    # Provisional validation can emit an unnumbered preview and
+                    # warm the exact proof cache. It never grants final authority.
             finally:
                 close_preview_publication()
                 preview_futures.clear()
@@ -1225,13 +1251,10 @@ class UniversalSkillFinder:
         emit_progress(progress_callback, ProgressEvent(
             "ranking_started", query=query, completed=len(candidates), total=len(candidates), status="started",
         ))
-        ranked_pool = self._merge(candidates, query)
-        for item in ranked_pool:
-            proof = preview_proofs.get(item.id)
-            if proof is not None:
-                proof_data = asdict(proof)
-                if not any(existing == proof_data for existing in item.link_proofs):
-                    item.link_proofs.append(proof_data)
+        ranked_pool = [
+            item for item in self._merge(candidates, query)
+            if self._result_relevance_admissible(item)
+        ]
         ranking_elapsed_ms = int((time.monotonic() - ranking_started_at) * 1000)
         validation_started_at = time.monotonic()
         emit_progress(progress_callback, ProgressEvent(
@@ -1334,6 +1357,7 @@ class UniversalSkillFinder:
                 # Safe counters only. Values, headers, and credential material
                 # never enter the report or the live-source summary.
                 "request_budget": validation_budget.snapshot(),
+                "provisional_request_budget": provisional_budget.snapshot(),
             },
             notes=(self._verification_notes(ordered_coverage, ranked_pool) + (
                 ["An optional early destination check did not complete; only final eligible results are shown."]
@@ -1471,7 +1495,7 @@ class UniversalSkillFinder:
         # leave the remaining pool for an explicit continuation.
         deltas: dict[str, dict[str, Any]] = {}
         target_cache = TargetResolutionCache()
-        checked_results = results[:30]
+        checked_results = results[:MAX_PAGE_SCAN]
         offset = 0
         while offset < len(checked_results):
             if validation_deadline.remaining() <= 0:
@@ -1680,7 +1704,9 @@ class UniversalSkillFinder:
                     best_rank_by_source.get(item.source_id, item.native_rank or 1), item.native_rank or 1
                 )
             rrf = sum(1.0 / (60 + max(1, rank)) for rank in best_rank_by_source.values())
-            match = text_match_percent(query, preferred.name, preferred.description, preferred.skill_path or "")
+            match = compatible_match_percent(
+                query, preferred.name, preferred.description, preferred.skill_path or "", preferred.repository or "",
+            )
             install = dict(preferred.install)
             if install:
                 install["requires_approval"] = True

@@ -100,7 +100,7 @@ An abbreviated example, not a live result:
 ```text
 Search: pdf forms
 
-24 matches · 10 shown
+24 candidates · 10 shown
 Sources: 5 searched · 4 cached
 
 1. pdf

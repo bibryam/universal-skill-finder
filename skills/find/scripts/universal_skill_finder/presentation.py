@@ -944,7 +944,7 @@ def _summary_header(report: object, results: list[object], summary: Mapping[str,
             "",
             f"**{_counted(int(data['unique']), 'saved skill')}** · **{current} shown** · **no new search**",
         ])
-    result_line = f"**{_counted(int(data['unique']), 'match')}** · **{current} shown**"
+    result_line = f"**{_counted(int(data['unique']), 'candidate')}** · **{current} shown**"
     if data["partial"]:
         result_line += " · **partial**"
     return "\n".join([
@@ -1375,7 +1375,7 @@ def _html_summary_header(report: object, results: list[object], summary: Mapping
         parts = [
             strong(_value(report, "query", "")),
             strong(f"{_counted(completed, 'source')} ({summary['searched']} searched, {summary['cached']} cached)"),
-            strong(f"{summary['unique']} found"), strong(f"showing {current}"),
+            strong(_counted(int(summary["unique"]), "candidate")), strong(f"showing {current}"),
         ]
     if summary["partial"]:
         parts.append(strong("partial"))
