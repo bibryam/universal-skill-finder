@@ -1,0 +1,6 @@
+# Development and release tooling only. The finder has no runtime dependencies.
+bandit==1.9.4
+build==1.6.0
+detect-secrets==1.5.0
+pip-audit==2.10.1
+setuptools==84.0.0

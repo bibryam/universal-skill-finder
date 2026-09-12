@@ -1,0 +1,20 @@
+name: Bug or failed search
+description: Report an installation problem or a source that stopped working.
+body:
+  - type: markdown
+    attributes:
+      value: "Do not post keys, private queries, full caches, or sensitive paths. Report vulnerabilities using SECURITY.md."
+  - type: input
+    id: versions
+    attributes:
+      label: Versions and platform
+      description: Finder version, Python version, OS, and Claude Code/Codex version if relevant.
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: What happened?
+      description: Minimal steps, expected behavior, and sanitized actual output. Include source ID/status for search failures.
+    validations:
+      required: true

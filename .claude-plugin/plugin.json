@@ -1,0 +1,20 @@
+{
+  "$schema": "https://json.schemastore.org/claude-code-plugin-manifest.json",
+  "name": "skill",
+  "displayName": "Universal Skill Finder",
+  "version": "0.1.0",
+  "license": "MIT",
+  "description": "Search Agent Skills sources as one catalogue, with explicit coverage and safe installation handoffs.",
+  "author": {
+    "name": "Universal Skill Finder contributors"
+  },
+  "homepage": "https://github.com/bibryam/universal-skill-finder",
+  "repository": "https://github.com/bibryam/universal-skill-finder",
+  "keywords": [
+    "agent-skills",
+    "skill-discovery",
+    "registry-search",
+    "claude-code",
+    "codex"
+  ]
+}

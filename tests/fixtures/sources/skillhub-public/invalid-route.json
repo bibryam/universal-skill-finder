@@ -1,0 +1,1 @@
+{"origin":"synthetic","source":"skillhub-public","case":"invalid-route","unsupported_route":"/skills/example","supported_route":"/skill/example","status":404,"note":"the plural route is unsupported and must not be used as a successful destination"}

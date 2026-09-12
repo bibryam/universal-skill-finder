@@ -1,0 +1,28 @@
+{
+  "schema_version": 1,
+  "pack": {
+    "id": "example-json-registries",
+    "description": "Disabled example: replace endpoint and mappings before enabling",
+    "enabled": false
+  },
+  "sources": [
+    {
+      "id": "example-json-catalog",
+      "kind": "registry",
+      "adapter": "http-json-v1",
+      "enabled": true,
+      "endpoint": "https://catalog.example.invalid/api/search",
+      "method": "GET",
+      "query_param": "q",
+      "limit_param": "limit",
+      "mapping": {
+        "items": "data.skills",
+        "id": "id",
+        "name": "name",
+        "description": "summary",
+        "url": "url"
+      },
+      "trust": "user-configured"
+    }
+  ]
+}

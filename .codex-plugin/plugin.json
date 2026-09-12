@@ -1,0 +1,36 @@
+{
+  "name": "skill",
+  "version": "0.1.0",
+  "license": "MIT",
+  "description": "Search Agent Skills sources as one catalogue, with explicit coverage and safe installation handoffs.",
+  "author": {
+    "name": "Universal Skill Finder contributors"
+  },
+  "homepage": "https://github.com/bibryam/universal-skill-finder",
+  "repository": "https://github.com/bibryam/universal-skill-finder",
+  "keywords": [
+    "agent-skills",
+    "skill-discovery",
+    "registry-search",
+    "claude-code",
+    "codex"
+  ],
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "Universal Skill Finder",
+    "shortDescription": "Search skills across enabled sources",
+    "longDescription": "Search enabled skill sources concurrently, merge defensible duplicates, inspect source coverage, and prepare an installation handoff without silently installing third-party code.",
+    "developerName": "Universal Skill Finder contributors",
+    "websiteURL": "https://github.com/bibryam/universal-skill-finder",
+    "category": "Developer Tools",
+    "capabilities": [
+      "Interactive",
+      "Read"
+    ],
+    "defaultPrompt": [
+      "Find a skill for this task across every enabled source.",
+      "Compare the best skills for PDF form filling.",
+      "List skill sources and show their types and enabled state."
+    ]
+  }
+}

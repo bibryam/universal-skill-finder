@@ -1,0 +1,84 @@
+{
+  "schema_version": 1,
+  "settings": {
+    "cache_ttl_seconds": 300,
+    "repository_cache_ttl_seconds": 86400,
+    "timeout_seconds": 10,
+    "max_workers": 6,
+    "max_response_bytes": 5242880,
+    "max_archive_bytes": 52428800,
+    "max_archive_members": 100000,
+    "max_archive_uncompressed_bytes": 268435456,
+    "max_skill_file_bytes": 524288,
+    "max_skills_per_repository": 1000
+  },
+  "packs": [
+    {"id": "registries", "description": "Public Agent Skills registries", "enabled": true},
+    {"id": "official-repositories", "description": "Publisher-owned GitHub skill repositories", "enabled": true},
+    {"id": "authenticated-registries", "description": "Optional registries requiring user-provided API keys", "enabled": true}
+  ],
+  "sources": [
+    {
+      "id": "skills-sh", "kind": "registry", "adapter": "skills-sh", "pack": "registries", "enabled": true,
+      "base_url": "https://skills.sh", "trust": "community-index", "provenance": "https://github.com/vercel-labs/skills"
+    },
+    {
+      "id": "skillsmp", "kind": "registry", "adapter": "skillsmp", "pack": "registries", "enabled": true,
+      "base_url": "https://skillsmp.com", "auth_env": "SKILLSMP_API_KEY", "auth_optional": true,
+      "trust": "community-index", "provenance": "https://skillsmp.com/docs/api"
+    },
+    {
+      "id": "clawhub", "kind": "registry", "adapter": "clawhub", "pack": "registries", "enabled": true,
+      "base_url": "https://clawhub.ai", "native_only": true, "non_suspicious_only": true,
+      "identity_namespace": "clawhub",
+      "trust": "community-index", "provenance": "https://github.com/openclaw/clawhub/blob/main/docs/api.md"
+    },
+    {
+      "id": "skillhub-public", "kind": "registry", "adapter": "skillhub-public", "pack": "registries", "enabled": true,
+      "base_url": "https://skills.palebluedot.live", "trust": "community-index", "provenance": "https://skills.palebluedot.live/docs"
+    },
+    {
+      "id": "tessl", "kind": "registry", "adapter": "tessl", "pack": "registries", "enabled": true,
+      "base_url": "https://api.tessl.io", "trust": "community-index", "provenance": "https://api.tessl.io/openapi.json"
+    },
+    {
+      "id": "polyskill", "kind": "registry", "adapter": "polyskill", "pack": "registries", "enabled": false,
+      "base_url": "https://polyskill.ai", "trust": "community-index", "provenance": "https://polyskill.ai/docs"
+    },
+    {
+      "id": "skills-directory", "kind": "registry", "adapter": "skills-directory", "pack": "authenticated-registries", "enabled": false,
+      "base_url": "https://www.skillsdirectory.com", "auth_env": "SKILLS_DIRECTORY_API_KEY",
+      "trust": "security-index", "provenance": "https://www.skillsdirectory.com/api-docs"
+    },
+    {
+      "id": "skillhub-pro", "kind": "registry", "adapter": "skillhub-pro", "pack": "authenticated-registries", "enabled": false,
+      "base_url": "https://www.skillhub.club", "auth_env": "SKILLHUB_API_KEY",
+      "trust": "community-index", "provenance": "https://www.skillhub.club/docs/api"
+    },
+    {
+      "id": "github-code-search", "kind": "registry", "adapter": "github-code-search", "pack": "authenticated-registries", "enabled": false,
+      "base_url": "https://api.github.com", "auth_env": "UNIVERSAL_SKILL_FINDER_GITHUB_TOKEN", "public_only": true,
+      "trust": "unverified", "provenance": "https://docs.github.com/en/rest/search/search#search-code"
+    },
+    {
+      "id": "openai-skills", "kind": "repository", "adapter": "github-repo", "pack": "official-repositories", "enabled": true,
+      "repository": "openai/skills", "ref": "main", "include": ["skills/**/SKILL.md"], "exclude": [],
+      "trust": "publisher-owned", "provenance": "https://github.com/openai/skills"
+    },
+    {
+      "id": "anthropic-skills", "kind": "repository", "adapter": "github-repo", "pack": "official-repositories", "enabled": true,
+      "repository": "anthropics/skills", "ref": "main", "include": ["skills/**/SKILL.md"], "exclude": [],
+      "trust": "publisher-owned", "provenance": "https://github.com/anthropics/skills"
+    },
+    {
+      "id": "google-skills", "kind": "repository", "adapter": "github-repo", "pack": "official-repositories", "enabled": true,
+      "repository": "google/skills", "ref": "main", "include": ["skills/**/SKILL.md"], "exclude": [],
+      "trust": "publisher-owned", "provenance": "https://github.com/google/skills"
+    },
+    {
+      "id": "vercel-agent-skills", "kind": "repository", "adapter": "github-repo", "pack": "official-repositories", "enabled": true,
+      "repository": "vercel-labs/agent-skills", "ref": "main", "include": ["**/SKILL.md"], "exclude": [],
+      "trust": "publisher-owned", "provenance": "https://github.com/vercel-labs/agent-skills"
+    }
+  ]
+}

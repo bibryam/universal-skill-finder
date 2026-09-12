@@ -1,0 +1,70 @@
+{
+  "schema_version": 2,
+  "generated_cases": ["many", "few", "empty", "query-encoding", "limits", "invalid-mixed", "duplicates", "optional-fields", "failures", "credentials", "cache", "selection"],
+  "sources": {
+    "skills-sh": {"adapter": "skills-sh", "source_cap": 100, "fixture": "contract.json"},
+    "skillsmp": {"adapter": "skillsmp", "source_cap": 50, "fixture": "contract.json"},
+    "clawhub": {"adapter": "clawhub", "source_cap": 100, "fixture": "contract.json"},
+    "skillhub-public": {"adapter": "skillhub-public", "source_cap": 100, "fixture": "contract.json", "extra_cases": ["invalid-route"]},
+    "tessl": {"adapter": "tessl", "source_cap": 100, "fixture": "contract.json"},
+    "polyskill": {"adapter": "polyskill", "source_cap": 100, "fixture": "contract.json"},
+    "skills-directory": {"adapter": "skills-directory", "source_cap": 100, "fixture": "contract.json"},
+    "skillhub-pro": {"adapter": "skillhub-pro", "source_cap": 100, "fixture": "contract.json"},
+    "github-code-search": {"adapter": "github-code-search", "source_cap": 10, "fixture": "contract.json"},
+    "openai-skills": {"adapter": "github-repo", "source_cap": 1000, "fixture": "contract.json"},
+    "anthropic-skills": {"adapter": "github-repo", "source_cap": 1000, "fixture": "contract.json"},
+    "google-skills": {"adapter": "github-repo", "source_cap": 1000, "fixture": "contract.json"},
+    "vercel-agent-skills": {"adapter": "github-repo", "source_cap": 1000, "fixture": "contract.json"}
+  },
+  "adapter_cases": {
+    "skills-sh": {"generated": "all"}, "skillsmp": {"generated": "all"}, "clawhub": {"generated": "all"},
+    "skillhub-public": {"generated": "all", "extra": ["invalid-route"]}, "skillhub-pro": {"generated": "all"},
+    "polyskill": {"generated": "all"}, "skills-directory": {"generated": "all"}, "github-code-search": {"generated": "all"},
+    "tessl": {"generated": "all"}, "github-repo": {"generated": "all"}, "local-directory": {"generated": "all"},
+    "http-json-v1": {"generated": "all", "na": {"paging": "Current generic adapter is GET-only; upstream paging is not a connector capability."}}
+  },
+  "not_applicable": {
+    "local-directory": {
+      "many": "The local-directory fixture exercises bounded filesystem scanning in its dedicated contract tests.",
+      "few": "The local-directory fixture exercises bounded filesystem scanning in its dedicated contract tests.",
+      "empty": "The local-directory fixture exercises bounded filesystem scanning in its dedicated contract tests.",
+      "query-encoding": "Catalogues are fetched independently of a query; filtering is local.",
+      "limits": "The local-directory fixture exercises bounded filesystem limits in its dedicated contract tests.",
+      "invalid-mixed": "Filesystem rows are not mixed JSON payloads.",
+      "duplicates": "Filesystem identity duplication is covered by the local scanner contract.",
+      "optional-fields": "Filesystem metadata is covered by the local scanner contract.",
+      "failures": "Filesystem error mapping is covered by the local scanner contract.",
+      "credentials": "Temporary local fixtures have no remote credential lane.",
+      "cache": "The local adapter has no source response cache.",
+      "selection": "Selection belongs to federation, not a local scanner."
+    },
+    "github-repo": {
+      "many": "Repository archive bounds are exercised by dedicated archive fixtures.",
+      "few": "Repository archive parsing is exercised by dedicated archive fixtures.",
+      "empty": "Repository archive parsing is exercised by dedicated archive fixtures.",
+      "query-encoding": "Catalogues are fetched independently of a query; filtering is local.",
+      "limits": "Repository archive bounds are exercised by dedicated archive fixtures.",
+      "invalid-mixed": "Repository archive parsing is not a mixed JSON response.",
+      "duplicates": "Repository identity handling is covered by archive fixtures.",
+      "optional-fields": "Repository metadata is covered by archive fixtures.",
+      "failures": "Repository transport/archive failures are covered by dedicated fixtures.",
+      "credentials": "Repository archive retrieval is anonymous.",
+      "cache": "Catalogue cache behavior is covered by repository cache tests.",
+      "selection": "Selection belongs to federation, not the repository adapter."
+    },
+    "github-code-search": {
+      "many": "GitHub code search has bounded search/blob fixtures in its dedicated adapter tests.",
+      "few": "GitHub code search has bounded search/blob fixtures in its dedicated adapter tests.",
+      "empty": "GitHub code search has bounded search/blob fixtures in its dedicated adapter tests.",
+      "query-encoding": "GitHub query construction is covered by its dedicated adapter tests.",
+      "limits": "GitHub request/file limits are covered by its dedicated adapter tests.",
+      "invalid-mixed": "GitHub response schema validation is covered by its dedicated adapter tests.",
+      "duplicates": "GitHub result identity handling is covered by its dedicated adapter tests.",
+      "optional-fields": "GitHub response metadata is covered by its dedicated adapter tests.",
+      "failures": "GitHub credential and transport failures are covered by its dedicated adapter tests.",
+      "credentials": "GitHub code search requires an explicitly configured token and is excluded from this public harness.",
+      "cache": "GitHub optional metric cache behavior is covered by dedicated adapter tests.",
+      "selection": "Selection belongs to federation, not the GitHub adapter."
+    }
+  }
+}

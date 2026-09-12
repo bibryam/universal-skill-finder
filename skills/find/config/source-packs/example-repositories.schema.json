@@ -1,0 +1,40 @@
+{
+  "schema_version": 1,
+  "pack": {
+    "id": "example-repositories",
+    "description": "ILLUSTRATIVE SCHEMA ONLY. Replace all placeholder repositories and review them before import.",
+    "enabled": false
+  },
+  "sources": [
+    {
+      "id": "example-team-skills",
+      "kind": "repository",
+      "adapter": "github-repo",
+      "enabled": false,
+      "repository": "example-org/example-skills",
+      "ref": "main",
+      "include": [
+        "skills/**/SKILL.md"
+      ],
+      "exclude": [
+        "skills/experimental/**"
+      ],
+      "trust": "user-configured",
+      "provenance": "illustrative-placeholder"
+    },
+    {
+      "id": "example-community-skills",
+      "kind": "repository",
+      "adapter": "github-repo",
+      "enabled": false,
+      "repository": "example-community/agent-skills",
+      "ref": "main",
+      "include": [
+        "**/SKILL.md"
+      ],
+      "exclude": [],
+      "trust": "user-configured",
+      "provenance": "illustrative-placeholder"
+    }
+  ]
+}

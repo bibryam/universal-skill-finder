@@ -1,0 +1,4 @@
+interface:
+  display_name: "Universal Skill Finder"
+  short_description: "Search skills across enabled sources"
+  default_prompt: "Use $find to find relevant skills across configured sources."

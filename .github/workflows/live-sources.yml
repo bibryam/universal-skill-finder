@@ -1,0 +1,43 @@
+name: Live source evidence
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - 'skills/find/scripts/universal_skill_finder/**'
+      - 'tests/fixtures/sources/**'
+      - 'tests/source_test_manifest.json'
+      - 'scripts/test_sources.py'
+      - 'scripts/source_test_selection.py'
+
+jobs:
+  source-evidence:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: '3.12'
+      - name: Run hermetic source contracts
+        shell: bash
+        run: |
+          set -o pipefail
+          python scripts/test_sources.py --all --offline | tee source-evidence.txt
+      - name: Record live coverage status
+        shell: bash
+        run: |
+          set +e
+          set -o pipefail
+          python scripts/test_sources.py --live --all | tee -a source-evidence.txt
+          code=$?
+          if [ "$code" -eq 1 ] || [ "$code" -eq 2 ]; then exit "$code"; fi
+          if [ "$code" -eq 3 ]; then echo '::warning::Live source coverage is incomplete.'; fi
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: always()
+        with:
+          name: source-evidence
+          path: source-evidence.txt

@@ -1,0 +1,21 @@
+__pycache__/
+*.py[cod]
+.coverage
+.pytest_cache/
+.DS_Store
+.universal-skill-finder/
+build/
+dist/
+*.egg-info/
+.idea/
+.vscode/
+.venv/
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+audit-output/
+
+# Local launch drafts are not part of the published project.
+docs/launch.md
