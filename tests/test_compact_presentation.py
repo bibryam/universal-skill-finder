@@ -84,7 +84,7 @@ class CompactPresentationTests(unittest.TestCase):
             self.assertNotIn(legacy_label, text)
         fields = ["descriptive words", "**Location:**", "**Found on:**", "**Signals:**", "Inspect and install:"]
         self.assertEqual([first_card.index(field) for field in fields], sorted(first_card.index(field) for field in fields))
-        for preserved in ("## Source coverage", "## Notes", "## Next actions", "Star Universal Skill Finder on GitHub"):
+        for preserved in ("## Source coverage", "## Notes", "## Next actions", "https://github.com/bibryam/universal-skill-finder"):
             self.assertIn(preserved, text)
 
     def test_compact_card_keeps_resolved_correction_and_unavailable_inspection_link(self):

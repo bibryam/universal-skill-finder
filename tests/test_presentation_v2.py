@@ -59,7 +59,7 @@ def report(mode: str = "online"):
             SimpleNamespace(source_id="tessl", status="cached", candidates_returned=0, shown=1, enabled=True, link_proof=proof("source_page", "reachable", "https://example.test/tessl")),
         ],
         notes=["Coverage is partial."], installed_scan={}, can_explain=True,
-        continuation=SimpleNamespace(available=True), footer_link_proof=proof("footer", "eligible", "https://example.test/universal-skill-finder"),
+        continuation=SimpleNamespace(available=True), footer_link_proof={},
     )
 
 

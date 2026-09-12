@@ -58,7 +58,7 @@ class SearchIntegrationTests(unittest.TestCase):
                 self.assertIn("No verified matches were returned; search coverage is incomplete.", text)
                 self.assertNotIn("No matches were found", text)
                 self.assertNotIn("| # | Skill |", text)
-                self.assertNotIn("https://github.com/bibryam/universal-skill-finder", text)
+                self.assertIn("[https://github.com/bibryam/universal-skill-finder](https://github.com/bibryam/universal-skill-finder)", text)
 
     def test_strict_partial_is_code_two_normal_partial_is_code_zero(self):
         for status in ("ok", "cached"):
@@ -78,7 +78,7 @@ class SearchIntegrationTests(unittest.TestCase):
         self.assertEqual(self.invoke(deepcopy(report), ["--strict"])[0], 2)
         self.assertEqual(self.invoke(deepcopy(report), ["--strict", "--source", "github-search"])[0], 0)
 
-    def test_v2_cards_keep_required_fields_and_unproved_footer_hidden(self):
+    def test_v2_cards_keep_required_fields_and_canonical_footer(self):
         report = integration_report(partial=True)
         report.results = [result(id=f"skill:{index}", name=f"pdf-{index}") for index in range(1, 11)]
         code, text, _, search = self.invoke(report, ["--markdown", "--assistant", "codex"])
@@ -92,7 +92,7 @@ class SearchIntegrationTests(unittest.TestCase):
             self.assertEqual(cards.count(field), 10)
         self.assertNotIn("npx skills@", text)
         self.assertIn("## Source coverage", text)
-        self.assertNotIn("https://github.com/bibryam/universal-skill-finder", text)
+        self.assertIn("[https://github.com/bibryam/universal-skill-finder](https://github.com/bibryam/universal-skill-finder)", text)
         self.assertEqual(search.call_args.kwargs["max_results"], 10)
         self.assertEqual(search.call_args.kwargs["source_ids"], [])
 

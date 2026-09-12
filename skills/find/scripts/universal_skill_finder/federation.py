@@ -30,7 +30,7 @@ from .source_presentation import public_source_url
 from .text import clean_text, occurrence_aliases, safe_skill_path, stable_result_id, text_match_percent, weak_occurrence_aliases
 from .versioning import ADAPTER_CONTRACT_VERSION, effective_config_revision, release_metadata
 from .validation import (
-    AnonymousPublicTransport, Destination, TargetResolutionCache, github_repository_destination, github_skill_destination,
+    AnonymousPublicTransport, Destination, TargetResolutionCache, github_skill_destination,
     public_resolver, reviewed_destination, skillhub_destination, validate_destination, validate_ranked,
 )
 
@@ -1281,15 +1281,6 @@ class UniversalSkillFinder:
                 1 for result in results if source["id"] in result.source_ids
             )
         ordered_coverage = [coverage_by_id[source["id"]] for source in self.config.sources]
-        footer_proof: dict[str, Any] = {}
-        if (final_validation_deadline.remaining() > 0 and not offline and not dry_run and isinstance(self.validation_transport, AnonymousPublicTransport)
-                and any(item.status in {"ok", "cached"} for item in ordered_coverage)):
-            footer = github_repository_destination("universal-skill-finder-footer", repository="bibryam/universal-skill-finder")
-            checked_footer = self._cached_destination_proof(
-                footer, phase="final", budget=validation_budget,
-                permits=validation_permits, deadline=final_validation_deadline,
-            )
-            footer_proof = asdict(checked_footer)
         report = SearchReport(
             query=query,
             results=results,
@@ -1344,7 +1335,6 @@ class UniversalSkillFinder:
                 # never enter the report or the live-source summary.
                 "request_budget": validation_budget.snapshot(),
             },
-            footer_link_proof=footer_proof,
             notes=(self._verification_notes(ordered_coverage, ranked_pool) + (
                 ["An optional early destination check did not complete; only final eligible results are shown."]
                 if preview_failures else []

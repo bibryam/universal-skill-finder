@@ -1,6 +1,6 @@
 {
   "name": "skill",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "license": "MIT",
   "description": "Search Agent Skills sources as one catalogue, with explicit coverage and safe installation handoffs.",
   "author": {

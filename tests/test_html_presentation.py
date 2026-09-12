@@ -98,7 +98,7 @@ class HtmlPresentationTests(unittest.TestCase):
         self.assertNotIn("<details", offline)
         self.assertNotIn("npx skills@", offline)
         self.assertNotIn("<footer", offline)
-        self.assertNotIn("⭐ Star Universal Skill Finder on GitHub", offline)
+        self.assertNotIn(REPOSITORY, offline)
         found.coverage[0].link_proof = proof("source_page", "eligible", "https://example.test/coverage")
         self.assertNotIn("https://example.test/coverage", render_report(found, format="html"))
         dry = render_report(report(), format="html", dry_run=True)
@@ -106,30 +106,28 @@ class HtmlPresentationTests(unittest.TestCase):
         self.assertNotIn("<article", dry)
         self.assertNotIn("npx skills@", dry)
         self.assertNotIn("<footer", dry)
-        self.assertNotIn("⭐ Star Universal Skill Finder on GitHub", dry)
+        self.assertNotIn(REPOSITORY, dry)
 
-    def test_html_footer_is_a_star_link_only_with_eligible_proof(self):
+    def test_html_footer_is_the_canonical_repository_link_regardless_of_report_proof(self):
         found = report()
         found.footer_link_proof = proof("repository", "eligible", REPOSITORY)
         eligible = render_report(found, format="html")
-        self.assertEqual(eligible.count("⭐ Star Universal Skill Finder on GitHub"), 1)
-        self.assertIn(f'href="{REPOSITORY}"', eligible)
-        self.assertNotIn("+-- * Universal Skill Finder", eligible)
+        expected = f'<a href="{REPOSITORY}">{REPOSITORY}</a>'
+        self.assertIn(expected, eligible)
 
-        found.footer_link_proof = proof("repository", "inconclusive", REPOSITORY)
+        found.footer_link_proof = proof("repository", "inconclusive", "https://evil.example/repository")
         unproved = render_report(found, format="html")
-        self.assertEqual(unproved.count("⭐ Star Universal Skill Finder on GitHub"), 1)
-        self.assertIn("repository link not verified for this report", unproved)
-        self.assertNotIn(REPOSITORY, unproved)
+        self.assertIn(expected, unproved)
+        self.assertNotIn("evil.example", unproved)
 
-    def test_failed_html_search_omits_star_footer_even_with_stored_proof(self):
+    def test_failed_html_search_omits_repository_footer_even_with_stored_proof(self):
         found = report()
         found.results = []
         found.coverage = [SimpleNamespace(source_id="failed", status="timeout", enabled=True)]
         found.footer_link_proof = proof("repository", "eligible", REPOSITORY)
         text = render_report(found, format="html")
         self.assertNotIn("<footer", text)
-        self.assertNotIn("⭐ Star Universal Skill Finder on GitHub", text)
+        self.assertNotIn(REPOSITORY, text)
 
     def test_empty_html_keeps_pending_exhausted_and_coverage_explanations(self):
         found = report()

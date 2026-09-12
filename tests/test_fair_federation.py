@@ -16,7 +16,7 @@ from universal_skill_finder.cache import Cache
 from universal_skill_finder.config import EffectiveConfig
 from universal_skill_finder.federation import UniversalSkillFinder
 from universal_skill_finder.http import FinderHttpError
-from universal_skill_finder.models import Candidate, LinkProof
+from universal_skill_finder.models import Candidate
 from universal_skill_finder.presentation import render_report
 from universal_skill_finder.runtime import Deadline, NetworkPolicy, PermitPool, RequestBudget, SourceJob, WorkerSupervisor
 from universal_skill_finder.validation import AnonymousPublicTransport, AnonymousResponse, reviewed_destination
@@ -231,31 +231,6 @@ class FairFederationTests(unittest.TestCase):
         time.sleep(0.22)
         self.assertEqual(cache.metadata("queries"), [])
         self.assertEqual(report.snapshot["ordered_pool"], [])
-
-    def test_final_and_footer_proofs_share_one_freeze_anchored_deadline(self):
-        class Adapter:
-            def search(self, source, query, limit, context):
-                return [Candidate("one", "PDF forms", "Fill PDF forms", source["id"], "registry", "skills-sh")]
-
-        root = Path(self.temporary.name)
-        source = registry_source("deadline", "https://skills.sh")
-        config = EffectiveConfig(settings={}, packs=[], sources=[source], overlay_path=root / "sources.json", overlay={})
-        finder = UniversalSkillFinder(config, cache=Cache(root / "cache"), http=object(), validation_transport=AnonymousPublicTransport())
-        finder.adapter_map = {"skills-sh": Adapter()}
-        observed = {}
-
-        def validate(_results, _deadline, _policy, **kwargs):
-            observed["final"] = kwargs["validation_deadline"]
-
-        def footer(_destination, **kwargs):
-            observed["footer"] = kwargs["deadline"]
-            return LinkProof("repository", "https://github.com/bibryam/universal-skill-finder", "eligible")
-
-        finder._validate_ranked_pool = validate  # type: ignore[method-assign]
-        finder._cached_destination_proof = footer  # type: ignore[method-assign]
-        finder.search("pdf forms")
-
-        self.assertIs(observed["final"], observed["footer"])
 
     def test_final_validation_cap_is_not_restarted_after_local_ranking(self):
         class Adapter:
