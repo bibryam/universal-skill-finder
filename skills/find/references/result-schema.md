@@ -64,7 +64,7 @@ This example is illustrative, not a claim about a real registry or repository:
       "skill_path": "skills/pdf-forms",
       "ref": "main",
       "publisher": "example-org",
-      "content_sha256": null,
+      "content_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
       "source_ids": ["example-catalog", "example-repository"],
       "trust": ["user-configured"],
       "text_match_percent": 100,
@@ -76,13 +76,34 @@ This example is illustrative, not a claim about a real registry or repository:
         "score": 0.91,
         "components": {"lexical": 0.84, "skill_installs": 0.07}
       },
-      "link_proofs": [{
-        "role": "skill_destination",
-        "url": "https://github.com/example-org/example-skills/tree/main/skills/pdf-forms",
+      "link_proofs": [
+        {
+          "role": "skill_destination",
+          "url": "https://github.com/example-org/example-skills/tree/main/skills/pdf-forms",
+          "status": "eligible",
+          "identity_basis": "github-owner-repository-path-v1"
+        },
+        {
+          "role": "repository",
+          "url": "https://github.com/example-org/example-skills",
+          "status": "eligible",
+          "identity_basis": "github-owner-repository-v1"
+        }
+      ],
+      "target_proof": {
+        "kind": "github",
         "status": "eligible",
-        "identity_basis": "repository_ref_skill_path_content_sha256"
-      }],
-      "target_proof": {"kind": "github_archive", "status": "eligible"},
+        "method": "anonymous_exact_skill_md_get",
+        "identity_basis": "github-exact-skill-md-v1",
+        "url": "https://raw.githubusercontent.com/example-org/example-skills/main/skills/pdf-forms/SKILL.md",
+        "actual_name": "PDF Forms",
+        "content_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "resolved": {
+          "repository": "example-org/example-skills",
+          "ref": "main",
+          "skill_path": "skills/pdf-forms"
+        }
+      },
       "metrics_by_source": {
         "example-catalog": {"downloads": 42}
       },
@@ -146,7 +167,7 @@ The abbreviated example omits `provenance`. Real reports include release, code, 
 |---|---|
 | `id` | Deterministic hash of the best identity evidence available for this merge |
 | `name`, `description` | Preferred occurrence's cleaned display text |
-| `canonical_url` | Best source or repository page, if known |
+| `canonical_url` | Best identity URL reported by the source, if known; not automatically display-eligible |
 | `repository` | Normalized GitHub `owner/repository`, if known |
 | `skill_path` | Directory containing `SKILL.md`, if known |
 | `ref` | Repository ref supplied by the source, if known |
@@ -162,9 +183,9 @@ The abbreviated example omits `provenance`. Real reports include release, code, 
 | `occurrences` | Every normalized source candidate retained for audit and comparison |
 | `installed` | Fresh local installed-skill evidence; empty when not checked, never trusted from source/cache metadata |
 | `ranking` | `soft-native-v2` version, score, components, tie-breaks and evidence actually used |
-| `link_proofs` | Checked destination evidence; only `eligible` proofs authorize links |
-| `target_proof` | Reported versus resolved target identity and exact content/path evidence |
-| `attributions` | Proof-gated contributing source destinations and roles |
+| `link_proofs` | Checked human-navigation evidence for GitHub directories, repository roots, and source listings; only an `eligible` or explicitly display-accepted proof for that exact destination authorizes its displayed link |
+| `target_proof` | Reported versus resolved target identity and exact raw `SKILL.md` content/path evidence; this does not itself authorize a displayed link |
+| `attributions` | Eligible, independently proof-gated native destinations; `source_ids` retains every contributor, including sources without a verified listing |
 | `validation_status` | `eligible`, `unavailable`, `inconclusive`, or `not_checked` |
 | `result_number` | Stable cumulative number assigned only when materialized |
 
@@ -174,7 +195,7 @@ The `Metrics` column shows nonnegative `github_stars`, `stars`, `installs`, `dow
 
 For an occurrence from the `tessl` adapter, the same column may show separately labelled `tessl_quality` (a raw normalized value from 0 to 1, rounded for display), `tessl_security_level` (`NONE`, `LOW`, `MEDIUM`, `HIGH` or `CRITICAL`), and `tessl_scored_at`. These are Tessl's version-specific assessments, not popularity counts or this finder's security verdict. Zero quality is preserved; missing or unsupported values are omitted rather than converted. `NONE` is not a safety guarantee. Deprecated `scores.security` is never displayed. `tessl_score_version` and other supported source-score fields remain in JSON; they are not Git refs, fingerprints or federation ranking inputs.
 
-Tessl skill-containing packages may appear as explicitly labelled bundle candidates with a package listing URL and inspection warning. Their package name/version is not an exact skill name/ref, and they have no generated install command. `tessl_metric_scope` distinguishes `skill` from `bundle`; package assessments stay in JSON and are not displayed as individual-skill quality scores. `tessl_bundle_version` identifies the inspected package version. Individual GitHub skill rows retain their repository/path for deduplication while unresolved refs require inspection.
+Tessl skill-containing packages may appear as explicitly labelled bundle candidates with a package listing URL and inspection warning. Their package name/version is not an exact skill name/ref, and they have no generated install command. `tessl_metric_scope` distinguishes `skill` from `bundle`; package assessments stay in JSON and are not displayed as individual-skill quality scores. `tessl_bundle_version` identifies the inspected package version. Individual GitHub skill rows retain their repository/path for deduplication and a separate connector-reviewed Tessl `/registry/skills/github/OWNER/REPOSITORY/SKILL` listing candidate. That source listing remains unlinked until its exact page confirms the encoded repository and skill name; unresolved GitHub refs still require inspection.
 
 Configured GitHub repository sources can use separately cached metadata containing `github_stars`, `github_stars_scope: "repository"`, `github_stars_repository`, and `github_stars_observed_at`. Discovery never initiates or waits for a stars request; the current implementation only reads a fresh existing metadata entry. Stars describe the repository, not each skill, and never affect `soft-native-v2` ranking.
 
@@ -283,7 +304,7 @@ The default Markdown/plain presenter reports `Inspect and install: type **Inspec
 npx skills@1.5.23 add https://github.com/OWNER/REPO/tree/REF/PATH --skill NAME --agent codex --copy
 ```
 
-Commands require fresh anonymous exact `SKILL.md` GET proof (`kind: github`, `method: anonymous_exact_skill_md_get`, `identity_basis: github-exact-skill-md-v1`), its actual frontmatter name, content hash and resolved repository/path/ref. Remote rows, query caches, portable snapshots, and archive-only proof cannot declare themselves install-ready. A checked listing alone supports inspection, not a command. Raw content proof activates only the exact URL fetched; it does not assert a browser tree URL was checked.
+Commands require fresh anonymous exact `SKILL.md` GET proof (`kind: github`, `method: anonymous_exact_skill_md_get`, `identity_basis: github-exact-skill-md-v1`), its actual frontmatter name, content hash and resolved repository/path/ref. Remote rows, query caches, portable snapshots, and archive-only proof cannot declare themselves install-ready. A checked listing alone supports inspection, not a command. The raw URL remains internal target evidence. Human-facing links require a separate eligible proof for the GitHub tree directory, repository root, or native source listing; renderers never expose raw-content or GitHub blob-file URLs as the default destination.
 
 Resolution checks a reported exact path first. An unpinned missing/stale ref can use the authoritative default branch, and a pathless result gets only a bounded root check. Explicit configured refs are not silently repaired. Reported identity stays separate from resolved command fields, and any change is disclosed. Ambiguity remains inspection-only; resolution never crawls repositories or installs anything.
 

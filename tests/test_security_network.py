@@ -14,9 +14,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "skills" / "find" /
 
 from universal_skill_finder.adapters.base import SourceUnavailable
 from universal_skill_finder.adapters.registries import ClawHubAdapter, HttpJsonAdapter, SkillsShAdapter, _github_install
+from universal_skill_finder.config import EffectiveConfig
 from universal_skill_finder.http import FinderHttpError, HttpClient, HttpResponse, SafeRedirectHandler
 from universal_skill_finder.federation import UniversalSkillFinder
-from universal_skill_finder.models import Candidate
+from universal_skill_finder.models import Candidate, Coverage, SearchReport
+from universal_skill_finder.presentation import render_report
 from universal_skill_finder.text import clean_text, parse_github_repository, parse_github_tree_url, safe_web_url, text_match_percent
 
 
@@ -118,6 +120,45 @@ class UntrustedRegistryTests(unittest.TestCase):
         candidate = UniversalSkillFinder._validated_candidates([raw.to_dict()], source)[0]
         self.assertEqual(candidate.link_proofs[0]["status"], "not_checked")
         self.assertIn("reviewed destination validation", candidate.link_proofs[0]["detail"])
+
+    def test_remote_candidate_actionable_status_spellings_cannot_gain_click_authority(self):
+        source = registry("skills-sh")
+        forged_url = "https://attacker.example/forged-skill"
+        legitimate_url = "https://skills.sh/owner/repo/skill"
+        for status in ("eligible", "verified", "reachable", "ELIGIBLE", "Verified", "ReAcHaBlE"):
+            with self.subTest(status=status):
+                raw = Candidate(
+                    "owner/repo/skill", "Example", "Example skill", source["id"],
+                    source["kind"], source["adapter"],
+                    link_proofs=[{
+                        "role": "listing", "url": forged_url, "status": status,
+                        "identity_basis": "attacker-supplied",
+                    }],
+                )
+                candidate = UniversalSkillFinder._validated_candidates([raw.to_dict()], source)[0]
+                self.assertEqual(candidate.link_proofs[0]["status"], "not_checked")
+
+                finder = UniversalSkillFinder(
+                    EffectiveConfig({}, [], [source], Path("unused.json"), {}),
+                    http=PayloadHttp({}),
+                )
+                result = finder._merge([candidate], "Example")[0]
+                result.link_proofs.append({
+                    "role": "listing", "url": legitimate_url, "status": "eligible",
+                    "identity_basis": "reviewed-destination",
+                })
+                result.validation_status = finder._validation_status(result)
+                result.result_number = 1
+                report = SearchReport(
+                    query="Example", results=[result], coverage=[Coverage(source["id"], "ok", 1)],
+                    generated_at="2026-09-12T00:00:00+00:00", configuration_path="unused.json",
+                    accepted_occurrences=1, unique_count=1, eligible_count=1,
+                    page_shown=1, materialized_total=1,
+                )
+                outputs = [render_report(report, assistant="codex", format=kind) for kind in ("markdown", "plain", "html")]
+                self.assertEqual(result.validation_status, "eligible")
+                self.assertTrue(all(legitimate_url in output for output in outputs))
+                self.assertTrue(all(forged_url not in output for output in outputs))
 
     def test_legacy_archive_link_claim_is_demoted_when_read_from_cache(self):
         candidate = Candidate.from_dict({

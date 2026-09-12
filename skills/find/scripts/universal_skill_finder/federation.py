@@ -13,7 +13,7 @@ from dataclasses import asdict
 from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 from urllib.parse import urlparse
 
 from .adapters import ADAPTER_SPECS, adapters
@@ -42,6 +42,13 @@ TRUST_PRIORITY = {
     "unverified": 1,
 }
 
+_REMOTE_ACTIONABLE_PROOF_STATUSES = frozenset({"eligible", "verified", "reachable"})
+
+
+def _is_remote_actionable_proof_status(value: object) -> bool:
+    """Match every remote spelling the renderer would treat as authority."""
+    return isinstance(value, str) and value.casefold() in _REMOTE_ACTIONABLE_PROOF_STATUSES
+
 
 class _CutoffCache(Cache):
     """A child-process cache that cannot publish after its collection cutoff."""
@@ -50,10 +57,12 @@ class _CutoffCache(Cache):
         super().__init__(root)
         self.cutoff_at = cutoff_at
 
-    def write(self, namespace: str, key: str, payload: Any, *, can_publish: Any = None) -> bool:
+    def write(self, namespace: str, key: str, payload: Any, *, can_publish: Any = None,
+              publish_lock: Any = None) -> bool:
         return super().write(
             namespace, key, payload,
             can_publish=lambda: time.monotonic() < self.cutoff_at and (can_publish is None or can_publish()),
+            publish_lock=publish_lock,
         )
 
 
@@ -67,10 +76,12 @@ class _SourceCache:
     def __getattr__(self, name: str) -> Any:
         return getattr(self._cache, name)
 
-    def write(self, namespace: str, key: str, payload: Any, *, can_publish: Any = None) -> bool:
+    def write(self, namespace: str, key: str, payload: Any, *, can_publish: Any = None,
+              publish_lock: Any = None) -> bool:
         return self._cache.write(
             namespace, key, payload,
             can_publish=lambda: self._can_publish() and (can_publish is None or can_publish()),
+            publish_lock=publish_lock,
         )
 
 
@@ -138,6 +149,8 @@ class UniversalSkillFinder:
     def _cached_destination_proof(
         self, destination: Destination, *, phase: str, budget: RequestBudget,
         permits: PermitPool, deadline: Deadline,
+        can_publish: Callable[[], bool] | None = None,
+        publish_lock: Any = None,
     ):
         """Reuse only an exact, fresh anonymous proof and coalesce its refresh."""
         profile = destination.profile.name if destination.profile is not None else "unreviewed"
@@ -199,7 +212,13 @@ class UniversalSkillFinder:
                     budget=budget, permits=permits, deadline=deadline, phase=phase,
                 )
                 if proof.status in {"eligible", "unavailable"}:
-                    self.cache.write("proofs", key, asdict(proof), can_publish=lambda: deadline.remaining() > 0)
+                    self.cache.write(
+                        "proofs", key, asdict(proof),
+                        can_publish=lambda: deadline.remaining() > 0 and (
+                            can_publish is None or can_publish()
+                        ),
+                        publish_lock=publish_lock,
+                    )
                 return proof
 
     @staticmethod
@@ -405,7 +424,7 @@ class UniversalSkillFinder:
                 # evidence, never trusted link state. Only the reviewed,
                 # separately cached anonymous validator may make a URL active.
                 for proof in candidate.link_proofs:
-                    if proof.get("status") in {"eligible", "verified", "reachable"}:
+                    if _is_remote_actionable_proof_status(proof.get("status")):
                         proof["status"] = "not_checked"
                         proof["detail"] = "remote candidate link requires reviewed destination validation"
                 if candidate.target_proof:
@@ -759,6 +778,14 @@ class UniversalSkillFinder:
             deadline.started_at, deadline.collection_cutoff_at,
             min(deadline.collection_cutoff_at, deadline.network_deadline_at), 0.0,
         )
+        preview_publication_deadline = provisional_deadline
+        preview_publication_open = threading.Event()
+        preview_publication_open.set()
+        preview_publication_lock = threading.Lock()
+
+        def can_publish_preview() -> bool:
+            return preview_publication_open.is_set() and preview_publication_deadline.remaining() > 0
+
         collection_frozen_at: float | None = None
         supervisor = WorkerSupervisor(deadline)
         validation_budget: Any = RequestBudget(
@@ -784,6 +811,17 @@ class UniversalSkillFinder:
             max_workers=policy.provisional_validation_workers,
             thread_name_prefix="skill-preview",
         ) if provisional_enabled else None
+        preview_executor_closed = False
+
+        def close_preview_publication() -> None:
+            """Revoke cache authority and stop accepting queued preview work."""
+            nonlocal preview_executor_closed
+            with preview_publication_lock:
+                preview_publication_open.clear()
+                should_shutdown = preview_executor is not None and not preview_executor_closed
+                preview_executor_closed = True
+            if should_shutdown:
+                preview_executor.shutdown(wait=False, cancel_futures=True)
 
         def schedule_previews() -> None:
             if preview_executor is None or len(preview_attempted) >= policy.provisional_identities:
@@ -802,6 +840,8 @@ class UniversalSkillFinder:
                 future = preview_executor.submit(
                     self._cached_destination_proof, destination, phase="provisional",
                     budget=validation_budget, permits=validation_permits, deadline=provisional_deadline,
+                    can_publish=can_publish_preview,
+                    publish_lock=preview_publication_lock,
                 )
                 preview_futures[future] = item
                 if len(preview_attempted) >= policy.provisional_identities:
@@ -1087,6 +1127,7 @@ class UniversalSkillFinder:
                     preview and progress_callback is not None and deadline.collection_remaining() > 0
                 ))
 
+            collection_completed = False
             try:
                 fill_available(0)
                 while (active or len(started_ids) < len(runnable)) and deadline.collection_remaining() > 0:
@@ -1096,36 +1137,43 @@ class UniversalSkillFinder:
                     if deadline.collection_remaining() > 0:
                         next_boundary = round_boundaries[current_round] if current_round < len(round_boundaries) else deadline.collection_cutoff_at
                         time.sleep(min(0.01, deadline.collection_remaining(), max(0.0, next_boundary - time.monotonic())))
+                collection_completed = True
             finally:
-                # Freeze first: no completed worker can publish while processes
-                # are being terminated or injected threads finish in the background.
-                if deadline.collection_remaining() <= 0:
-                    for sources in admission_rounds:
-                        for source in sources:
-                            if source["id"] in started_ids:
-                                continue
-                            started_ids.add(source["id"])
-                            outcome = supervisor.submit(SourceJob(source["id"], self._host(source) or source["id"]))
-                            coverage_by_id[source["id"]] = Coverage(
-                                source_id=source["id"], status=outcome.status, detail=outcome.detail,
-                                host=self._host(source), target=self._target(source),
-                                admission_status="not_started_budget", live_status="not_started", incomplete_results=True,
-                            )
-                collection_frozen_at = time.monotonic()
-                supervisor.freeze("collection_cutoff")
-                for item in active.values():
-                    if item["kind"] == "process":
-                        item["handle"].terminate()
-                for item in active.values():
-                    if item["kind"] == "process":
-                        reap_process(item, preempt=False)
-                    else:
-                        item["cancelled"].set()
-                        item["handle"].cancel()
-                # Python cannot safely kill an arbitrary injected thread. It is
-                # detached from the frozen parent and its deadline-aware source
-                # path cannot write the query cache after cutoff.
-                pool.shutdown(wait=False, cancel_futures=True)
+                cleanup_completed = False
+                try:
+                    # Freeze first: no completed worker can publish while processes
+                    # are being terminated or injected threads finish in the background.
+                    if deadline.collection_remaining() <= 0:
+                        for sources in admission_rounds:
+                            for source in sources:
+                                if source["id"] in started_ids:
+                                    continue
+                                started_ids.add(source["id"])
+                                outcome = supervisor.submit(SourceJob(source["id"], self._host(source) or source["id"]))
+                                coverage_by_id[source["id"]] = Coverage(
+                                    source_id=source["id"], status=outcome.status, detail=outcome.detail,
+                                    host=self._host(source), target=self._target(source),
+                                    admission_status="not_started_budget", live_status="not_started", incomplete_results=True,
+                                )
+                    collection_frozen_at = time.monotonic()
+                    supervisor.freeze("collection_cutoff")
+                    for item in active.values():
+                        if item["kind"] == "process":
+                            item["handle"].terminate()
+                    for item in active.values():
+                        if item["kind"] == "process":
+                            reap_process(item, preempt=False)
+                        else:
+                            item["cancelled"].set()
+                            item["handle"].cancel()
+                    # Python cannot safely kill an arbitrary injected thread. It is
+                    # detached from the frozen parent and its deadline-aware source
+                    # path cannot write the query cache after cutoff.
+                    pool.shutdown(wait=False, cancel_futures=True)
+                    cleanup_completed = True
+                finally:
+                    if not collection_completed or not cleanup_completed:
+                        close_preview_publication()
 
         if collection_frozen_at is None:
             collection_frozen_at = time.monotonic()
@@ -1133,21 +1181,28 @@ class UniversalSkillFinder:
             deadline.started_at, deadline.collection_cutoff_at,
             deadline.validation_deadline(collection_frozen_at), deadline.validation_cap_seconds,
         )
+        # When collection finishes before its nominal cutoff, the shorter
+        # final-validation tail becomes the publication boundary for any
+        # provisional worker still in flight.
+        with preview_publication_lock:
+            preview_publication_deadline = final_validation_deadline
         # Production requests are process-bounded. Also bound joins themselves:
         # an injected callback that violates its timeout cannot delay this
         # result or publish late proof/cache state. Such in-process callbacks
         # remain responsible for stopping their own outstanding I/O.
         if preview_executor is not None:
-            for future, item in list(preview_futures.items()):
-                try:
-                    proof = future.result(timeout=final_validation_deadline.remaining())
-                except Exception:
-                    future.cancel()
-                    preview_failures.add(item.id)
-                    continue
-                preview_proofs[item.id] = proof
-            preview_futures.clear()
-            preview_executor.shutdown(wait=False, cancel_futures=True)
+            try:
+                for future, item in list(preview_futures.items()):
+                    try:
+                        proof = future.result(timeout=final_validation_deadline.remaining())
+                    except Exception:
+                        future.cancel()
+                        preview_failures.add(item.id)
+                        continue
+                    preview_proofs[item.id] = proof
+            finally:
+                close_preview_publication()
+                preview_futures.clear()
 
         accepted, outcomes = supervisor.freeze("collection_complete")
         for outcome in outcomes:
@@ -1341,13 +1396,23 @@ class UniversalSkillFinder:
         source_by_id = {source["id"]: source for source in self.config.sources}
         destinations: list[Any] = []
         expected_by_id: dict[str, dict[str, Any]] = {}
+        seen: set[tuple[str, str, str, str]] = set()
+
+        def add(destination: Destination, expected: dict[str, Any]) -> bool:
+            if destination.profile is None:
+                return False
+            key = (
+                destination.candidate_id, destination.role, destination.url or "",
+                json.dumps(destination.expected_identity, sort_keys=True, ensure_ascii=True, default=str),
+            )
+            if key in seen:
+                return False
+            seen.add(key)
+            destinations.append(destination)
+            expected_by_id[destination.candidate_id] = expected
+            return True
+
         for result in results:
-            if any(
-                isinstance(proof, dict) and proof.get("status") == "eligible"
-                and proof.get("role") in {"skill", "skill_destination", "repository"}
-                for proof in result.link_proofs
-            ):
-                continue
             for occurrence in result.occurrences:
                 if not isinstance(occurrence, dict):
                     continue
@@ -1364,32 +1429,31 @@ class UniversalSkillFinder:
                     destination = reviewed_destination(
                         result.id, role=listing_role, url=listing_url, adapter=str(adapter), expected_identity=expected,
                     )
-                    if destination.profile is not None:
-                        destinations.append(destination)
-                        listing_added = True
-                        expected_by_id[result.id] = {
-                            "kind": "reviewed_listing", "expected": destination.expected_identity,
-                        }
+                    listing_added = add(destination, {
+                        "kind": "reviewed_listing", "expected": destination.expected_identity,
+                    })
                 if (not listing_added and adapter in {"skillhub-public", "skillhub-pro"}
                         and isinstance(source.get("base_url"), str)):
                     native_id = occurrence.get("native_id")
                     if isinstance(native_id, str) and native_id:
                         try:
-                            destinations.append(skillhub_destination(
+                            destination = skillhub_destination(
                                 result.id, base_url=source["base_url"], native_id=native_id, expected_identity=expected,
-                            ))
-                            expected_by_id[result.id] = {"kind": "skillhub_listing", "expected": expected or {"id": native_id}}
+                            )
+                            add(destination, {
+                                "kind": "skillhub_listing", "expected": expected or {"id": native_id},
+                            })
                         except ValueError:
                             pass
                 repository, ref, skill_path = occurrence.get("repository"), occurrence.get("ref"), occurrence.get("skill_path")
                 if all(isinstance(value, str) and value for value in (repository, ref, skill_path)):
                     try:
-                        destinations.append(github_skill_destination(
+                        destination = github_skill_destination(
                             result.id, repository=repository, ref=ref, skill_path=skill_path,
-                        ))
-                        expected_by_id[result.id] = {
+                        )
+                        add(destination, {
                             "kind": "github_tree", "expected": {"repository": repository, "ref": ref, "skill_path": skill_path},
-                        }
+                        })
                     except ValueError:
                         pass
         return destinations, expected_by_id
@@ -1415,7 +1479,6 @@ class UniversalSkillFinder:
         # A large source pool is not a request to check every destination now.
         # Replenish the first page in frozen rank order, at most 30 identities;
         # leave the remaining pool for an explicit continuation.
-        proofs: dict[str, LinkProof] = {}
         deltas: dict[str, dict[str, Any]] = {}
         target_cache = TargetResolutionCache()
         checked_results = results[:30]
@@ -1423,9 +1486,11 @@ class UniversalSkillFinder:
         while offset < len(checked_results):
             if validation_deadline.remaining() <= 0:
                 break
-            eligible = sum(self._validation_status(item) == "eligible" or
-                           item.id in proofs and proofs[item.id].status == "eligible"
-                           for item in checked_results[:offset])
+            eligible = sum(
+                self._validation_status(item) == "eligible"
+                or deltas.get(item.id, {}).get("status") == "eligible"
+                for item in checked_results[:offset]
+            )
             if eligible >= requested_size:
                 break
             batch = checked_results[offset:offset + min(policy.final_validation_workers, requested_size - eligible)]
@@ -1454,8 +1519,6 @@ class UniversalSkillFinder:
                         future.cancel()
                         continue
                     deltas[result_id] = delta
-                    for proof_data in delta.get("link_proofs", []):
-                        proofs[result_id] = LinkProof(**proof_data)
             finally:
                 workers.shutdown(wait=False, cancel_futures=True)
         by_id = {result.id: result for result in results}
@@ -1465,12 +1528,31 @@ class UniversalSkillFinder:
                 by_id[result_id].target_proof = dict(target)
                 if target.get("status") == "eligible":
                     by_id[result_id].content_sha256 = target.get("content_sha256")
-        for result_id, proof in proofs.items():
+        proof_priority = {"not_checked": 0, "unavailable": 1, "inconclusive": 2, "eligible": 3}
+        for result_id, delta in deltas.items():
             result = by_id[result_id]
-            proof_data = asdict(proof)
-            if not any(existing == proof_data for existing in result.link_proofs):
-                result.link_proofs.append(proof_data)
-            if proof.status == "eligible":
+            for raw_proof in delta.get("link_proofs", []):
+                if not isinstance(raw_proof, dict):
+                    continue
+                fields = LinkProof.__dataclass_fields__
+                try:
+                    proof = LinkProof(**{key: value for key, value in raw_proof.items() if key in fields})
+                except (TypeError, ValueError):
+                    continue
+                proof_data = asdict(proof)
+                proof_key = (proof.role, proof.url)
+                existing_index = next((
+                    index for index, existing in enumerate(result.link_proofs)
+                    if isinstance(existing, dict) and (existing.get("role"), existing.get("url")) == proof_key
+                ), None)
+                if existing_index is None:
+                    result.link_proofs.append(proof_data)
+                elif proof_priority.get(proof.status, -1) >= proof_priority.get(
+                    str(result.link_proofs[existing_index].get("status", "not_checked")), -1,
+                ):
+                    result.link_proofs[existing_index] = proof_data
+                if proof.status != "eligible":
+                    continue
                 for occurrence in result.occurrences:
                     if not isinstance(occurrence, dict) or occurrence.get("listing_url") != proof.url:
                         continue
@@ -1478,6 +1560,9 @@ class UniversalSkillFinder:
                         "source_id": occurrence.get("source_id"), "label": occurrence.get("source_id"),
                         "role": proof.role, "url": proof.url, "status": "eligible",
                     }
+                    native_rank = occurrence.get("native_rank")
+                    if type(native_rank) is int and native_rank > 0:
+                        attribution["native_rank"] = native_rank
                     if not any(existing == attribution for existing in result.attributions):
                         result.attributions.append(attribution)
 
@@ -1495,6 +1580,8 @@ class UniversalSkillFinder:
             return "eligible"
         statuses = {str(status) for _role, status in destinations}
         target_status = result.target_proof.get("status") if isinstance(result.target_proof, dict) else None
+        if target_status == "eligible" and "unavailable" in statuses:
+            statuses.add("inconclusive")
         if target_status in {"inconclusive", "not_checked", "unavailable"}:
             statuses.add(target_status)
         if "inconclusive" in statuses:

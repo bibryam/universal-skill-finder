@@ -9,7 +9,7 @@
       "name": "skill",
       "displayName": "Universal Skill Finder",
       "description": "Search Agent Skills sources as one catalogue, with explicit coverage and safe installation handoffs.",
-      "version": "0.1.0",
+      "version": "0.1.1",
       "author": {
         "name": "Universal Skill Finder contributors"
       },

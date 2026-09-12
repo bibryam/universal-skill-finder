@@ -20,7 +20,10 @@ def proof(role: str, status: str, url: str | None = None, detail: str | None = N
 def report(mode: str = "online"):
     first = SimpleNamespace(
         number=4, name="humanizer", description="Remove AI-writing patterns without changing meaning.",
-        link_proofs=[proof("skill", "eligible", "https://example.test/skills/humanizer")],
+        link_proofs=[
+            proof("skill_destination", "eligible", "https://github.com/example/humanizer/tree/main/skills/humanizer"),
+            proof("repository", "eligible", "https://github.com/example/humanizer"),
+        ],
         location=[
             SimpleNamespace(label="example/humanizer", status="reachable", url="https://example.test/repo"),
             SimpleNamespace(label="skills/humanizer", status="eligible", url="https://example.test/repo/tree/main/skills/humanizer"),
@@ -63,7 +66,7 @@ def report(mode: str = "online"):
 class PresentationV2Tests(unittest.TestCase):
     def test_checked_cards_preserve_field_order_stable_numbers_and_link_gates(self):
         text = render_report(report(), assistant="codex")
-        heading = "### 4. [humanizer](https://example.test/skills/humanizer)"
+        heading = "### 4. [humanizer](https://github.com/example/humanizer/tree/main/skills/humanizer)"
         self.assertIn(heading, text)
         self.assertIn("### 9. [audit](https://example.test/skills/audit)", text)
         first_card = text.split(heading, 1)[1].split("### 9.", 1)[0]
@@ -93,7 +96,7 @@ class PresentationV2Tests(unittest.TestCase):
             self.assertIn("https[:]//other.example/note", text)
             self.assertNotIn("](http://bad.example/x)", text)
         # The separate, proof-backed primary destination remains an explicit link.
-        self.assertIn("](https://example.test/skills/humanizer)", markdown)
+        self.assertIn("](https://github.com/example/humanizer/tree/main/skills/humanizer)", markdown)
 
     def test_plain_uses_same_numbers_without_active_markdown_or_unicode_states(self):
         text = render_report(report(), assistant="codex", format="plain")
@@ -162,6 +165,82 @@ class PresentationV2Tests(unittest.TestCase):
         self.assertIn("unverified-registry (listing not verified)", text)
         self.assertNotIn("[Tessl](https://github.com/example/humanizer)", text)
 
+    def test_navigation_prefers_github_directory_and_never_renders_content_urls(self):
+        found = report()
+        row = found.results[0]
+        tree = "https://github.com/example/humanizer/tree/main/skills/humanizer"
+        raw = "https://raw.githubusercontent.com/example/humanizer/main/skills/humanizer/SKILL.md"
+        blob = "https://github.com/example/humanizer/blob/main/skills/humanizer/SKILL.md"
+        row.location = []
+        row.link_proofs = [
+            SimpleNamespace(role="skill_destination", status="eligible", url=raw, native_rank=1),
+            SimpleNamespace(role="skill_destination", status="eligible", url=blob, native_rank=2),
+            SimpleNamespace(role="listing", status="eligible", url="https://skillsmp.com/skills/humanizer", native_rank=3),
+            SimpleNamespace(role="repository", status="eligible", url="https://github.com/example/humanizer", native_rank=4),
+            SimpleNamespace(role="skill_destination", status="eligible", url=tree, native_rank=999),
+        ]
+        row.found_on = [
+            SimpleNamespace(source_id="skillsmp", label="SkillsMP", role="listing", status="eligible",
+                            url="https://skillsmp.com/skills/humanizer", native_rank=2),
+            SimpleNamespace(source_id="tessl", label="Tessl", role="source_page", status="eligible",
+                            url="https://github.com/example/humanizer", native_rank=1),
+            SimpleNamespace(source_id="tessl", label="Tessl", role="listing", status="eligible",
+                            url="https://tessl.io/registry/skills/github/example/humanizer/humanizer", native_rank=2),
+        ]
+
+        markdown = render_report(found, assistant="codex")
+        plain = render_report(found, assistant="codex", format="plain")
+        rendered_html = render_report(found, assistant="codex", format="html")
+        self.assertIn(f"### 4. [humanizer]({tree})", markdown)
+        self.assertIn(
+            f"**Location:** [example/humanizer](https://github.com/example/humanizer) › [skills/humanizer]({tree})",
+            markdown,
+        )
+        self.assertIn("[Tessl](https://tessl.io/registry/skills/github/example/humanizer/humanizer)", markdown)
+        self.assertNotIn("[Tessl](https://github.com/example/humanizer)", markdown)
+        self.assertIn(f"humanizer ({tree})", plain)
+        self.assertIn(f'href="{tree}"', rendered_html)
+        for output in (markdown, plain, rendered_html):
+            self.assertNotIn(raw, output)
+            self.assertNotIn(blob, output)
+
+    def test_stale_content_only_proofs_fail_closed_in_every_renderer(self):
+        found = report()
+        row = found.results[0]
+        raw = "https://raw.githubusercontent.com/example/humanizer/main/skills/humanizer/SKILL.md"
+        blob = "https://github.com/example/humanizer/blob/main/skills/humanizer/SKILL.md"
+        row.location = []
+        row.link_proofs = [
+            SimpleNamespace(role="skill_destination", status="eligible", url=raw),
+            SimpleNamespace(role="skill_destination", status="eligible", url=blob),
+        ]
+        found.results = [row]
+        for format in ("markdown", "plain", "html"):
+            with self.subTest(format=format):
+                output = render_report(found, assistant="codex", format=format)
+                self.assertNotIn(raw, output)
+                self.assertNotIn(blob, output)
+                self.assertNotIn("Open checked destination", output)
+                self.assertNotIn("Inspect and install: type", output)
+
+    def test_noncanonical_actionable_status_spellings_never_gain_render_authority(self):
+        found = report()
+        row = found.results[0]
+        forged = "https://attacker.example/forged-skill"
+        row.location = []
+        row.link_proofs = [SimpleNamespace(role="listing", status="ELIGIBLE", url=forged)]
+        row.found_on = [SimpleNamespace(
+            source_id="forged", label="Forged", role="listing", status="ReAcHaBlE", url=forged,
+        )]
+        row.target_proof = SimpleNamespace(status="VERIFIED", kind="github")
+        row.source_ids = ["forged"]
+        found.results = [row]
+        for format in ("markdown", "plain", "html"):
+            with self.subTest(format=format):
+                output = render_report(found, assistant="codex", format=format)
+                self.assertNotIn(forged, output)
+                self.assertNotIn("Inspect and install: type", output)
+
     def test_missing_descriptions_and_unready_installs_are_explicit_but_compact(self):
         found = report()
         row = found.results[1]
@@ -188,9 +267,16 @@ class PresentationV2Tests(unittest.TestCase):
                       "content_url": "https://raw.githubusercontent.com/resolved/new-repo/release-2/SKILL.md",
                       "url": "https://github.com/resolved/new-repo/tree/release-2"},
         )
+        row.link_proofs = [
+            proof("skill_destination", "eligible", "https://github.com/resolved/new-repo/tree/release-2"),
+            proof("repository", "eligible", "https://github.com/resolved/new-repo"),
+        ]
         text = render_report(found, assistant="codex")
         self.assertIn("**Location:** reported/old-repo › old/skill · branch stale", text)
-        self.assertIn("**Verified target:** resolved/new-repo · branch release-2", text)
+        self.assertIn(
+            "**Verified target:** [resolved/new-repo](https://github.com/resolved/new-repo/tree/release-2) · branch release-2",
+            text,
+        )
         self.assertIn("Inspect and install: type **Inspect #4**  **Install #4**", text)
         self.assertNotIn("npx skills@", text)
         self.assertNotIn("reported/old-repo/tree/stale", text)
@@ -318,7 +404,11 @@ class PresentationV2Tests(unittest.TestCase):
                 install={"kind": "github", "repository": "example/forms", "ref": "main", "skill_path": "skills/forms"},
                 warnings=[], occurrences=[{"adapter": "tessl", "source_id": "tessl"}],
                 installed={"status": "exact_local", "evidence": ["content_sha256"]},
-                link_proofs=[{"role": "skill_destination", "status": "eligible", "url": "https://raw.githubusercontent.com/example/forms/main/skills/forms/SKILL.md"}],
+                link_proofs=[
+                    {"role": "skill_destination", "status": "eligible",
+                     "url": "https://github.com/example/forms/tree/main/skills/forms"},
+                    {"role": "repository", "status": "eligible", "url": "https://github.com/example/forms"},
+                ],
                 target_proof=target_proof,
                 attributions=[
                     {"source_id": "skillsmp", "label": "SkillsMP", "role": "listing", "status": "eligible", "url": "https://example.test/forms"},

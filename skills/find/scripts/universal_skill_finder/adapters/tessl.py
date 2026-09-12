@@ -14,6 +14,7 @@ from .base import AdapterContext, SourceUnavailable
 
 
 API_ORIGIN = "https://api.tessl.io"
+REGISTRY_ORIGIN = "https://tessl.io"
 SEARCH_ENDPOINT = API_ORIGIN + "/experimental/search"
 MAX_RESULTS = 100
 MAX_RESPONSE_BYTES = 512 * 1024
@@ -55,6 +56,17 @@ def _location(attributes: dict[str, Any]) -> tuple[str, str | None, str] | None:
     return url, repository, directory
 
 
+def _individual_listing(repository: str, name: object) -> str | None:
+    """Build Tessl's reviewed route without repairing untrusted identity fields."""
+    if (not isinstance(name, str) or clean_text(name, 101) != name
+            or not _PACKAGE_NAME.fullmatch(name)):
+        return None
+    parts = repository.split("/")
+    if len(parts) != 2 or parse_github_repository(repository) != repository:
+        return None
+    return f"{REGISTRY_ORIGIN}/registry/skills/github/{parts[0]}/{parts[1]}/{name}"
+
+
 def _bundle(item: dict[str, Any], attributes: dict[str, Any]) -> tuple[str, str, str, str] | None:
     """An exact scored, public skill-bearing version is an inspection-only bundle."""
     full_name, name = attributes.get("fullName"), attributes.get("name")
@@ -82,7 +94,7 @@ def _bundle(item: dict[str, Any], attributes: dict[str, Any]) -> tuple[str, str,
         return None
     # Multiple versions can remain active. Link and label exactly the scored
     # version; never assume the first array entry is current.
-    return full_name, version, clean_text(matched[0]["summary"]), f"https://tessl.io/registry/{full_name}/{version}"
+    return full_name, version, clean_text(matched[0]["summary"]), f"{REGISTRY_ORIGIN}/registry/{full_name}/{version}"
 
 
 def _metrics(attributes: dict[str, Any]) -> tuple[dict[str, Any], list[str]]:
@@ -229,7 +241,10 @@ class TesslAdapter:
                 name, description = clean_text(attributes["name"]), clean_text(attributes["description"])
                 publisher = repository.split("/", 1)[0] if repository else None
                 metrics["tessl_metric_scope"] = "skill"
-                listing_role = "repository"
+                listing_url = _individual_listing(repository, attributes["name"])
+                listing_role = "listing" if listing_url else "unavailable"
+                listing_derivation = "connector_reviewed" if listing_url else "unavailable"
+                expected_identity = {"repository": repository, "name": name} if listing_url else None
             else:
                 bundle = _bundle(item, attributes)
                 if not bundle:
@@ -240,7 +255,10 @@ class TesslAdapter:
                 repository, directory, publisher = None, None, full_name.split("/", 1)[0]
                 metrics.update(tessl_metric_scope="bundle", tessl_bundle_version=version)
                 warnings.append("Tessl skill bundle, not an individual skill; inspect this version and its contents before installation")
+                listing_url = canonical
                 listing_role = "bundle_listing"
+                listing_derivation = "source_provided"
+                expected_identity = None
             seen.add(native_id.lower())
             updated = attributes.get("updatedAt")
             results.append(Candidate(
@@ -250,10 +268,11 @@ class TesslAdapter:
                 skill_path=directory, publisher=publisher,
                 updated_at=clean_text(updated, 100) if isinstance(updated, str) else None,
                 trust=source.get("trust", "unverified"), metrics=metrics, warnings=warnings,
-                listing_url=canonical, listing_role=listing_role, listing_derivation="source_provided",
+                listing_url=listing_url, listing_role=listing_role, listing_derivation=listing_derivation,
                 source_evidence={"native": {"source_id": source["id"], "provider": self.name,
                     "request_mode": "public_hybrid", "native_rank": rank, "ordering_basis": "unknown",
-                    "eligibility": "unknown"}},
+                    "eligibility": "unknown"},
+                    **({"expected_identity": expected_identity} if expected_identity else {})},
                 metric_observations=[{"provider": self.name, "name": key, "value": value,
                     "scope": metrics.get("tessl_metric_scope", "unknown"), "observed_at": metrics.get("tessl_scored_at"),
                     "provenance": "Tessl score response"}

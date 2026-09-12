@@ -309,11 +309,90 @@ class DestinationValidationTests(unittest.TestCase):
         valid = validate_destination(destination, transport=Transport([
             AnonymousResponse(200, body=b'<meta name="octolytics-dimension-repository_nwo" content="owner/repo">', connection_address="8.8.8.8")]),
             resolver=resolver, budget=Budget(), permits=Permits(), deadline=time.monotonic() + 5)
-        self.assertEqual((valid.status, destination.url), ("eligible", "https://github.com/owner/repo/tree/main/skills/blade"))
+        self.assertEqual(
+            (valid.status, valid.role, destination.url),
+            ("eligible", "skill_destination", "https://github.com/owner/repo/tree/main/skills/blade"),
+        )
         wrong = validate_destination(destination, transport=Transport([
             AnonymousResponse(200, body=b'<meta name="octolytics-dimension-repository_nwo" content="owner/other">', connection_address="8.8.8.8")]),
             resolver=resolver, budget=Budget(), permits=Permits(), deadline=time.monotonic() + 5)
         self.assertEqual(wrong.status, "unavailable")
+
+    def test_exact_target_and_all_reviewed_navigation_destinations_are_checked_separately(self):
+        record = {
+            "id": "one", "repository": "owner/repo", "ref": "main",
+            "skill_path": "skills/humanize", "name": "Humanize",
+            "occurrences": [{"adapter": "skills-sh", "ref": "main"}],
+        }
+        fixture = ProviderProfile("fixture", identity)
+        destinations = [
+            github_skill_destination("one", repository="owner/repo", ref="main", skill_path="skills/humanize"),
+            Destination("one", "listing", "https://one.example/humanize", b"one", fixture),
+            Destination("one", "listing", "https://two.example/humanize", b"two", fixture),
+        ]
+        transport = Transport([
+            AnonymousResponse(200, body=b"---\nname: Humanize\n---\nRewrite prose.", connection_address="8.8.8.8"),
+            AnonymousResponse(200, body=b'<meta name="octolytics-dimension-repository_nwo" content="owner/repo">',
+                              connection_address="8.8.8.8"),
+            AnonymousResponse(200, body=b'<meta name="octolytics-dimension-repository_nwo" content="owner/repo">',
+                              connection_address="8.8.8.8"),
+            AnonymousResponse(200, body=b"one", connection_address="8.8.8.8"),
+            AnonymousResponse(200, body=b"two", connection_address="8.8.8.8"),
+        ])
+
+        outcome = validate_frozen_result_record(
+            "one", record, destinations=destinations, transport=transport, resolver=resolver,
+            budget=Budget(), permits=Permits(), deadline=time.monotonic() + 5,
+        )
+
+        self.assertEqual((outcome["status"], outcome["target_proof"]["status"]), ("eligible", "eligible"))
+        self.assertEqual(
+            [(proof["role"], proof["url"], proof["status"]) for proof in outcome["link_proofs"]],
+            [
+                ("skill_destination", "https://github.com/owner/repo/tree/main/skills/humanize", "eligible"),
+                ("repository", "https://github.com/owner/repo", "eligible"),
+                ("listing", "https://one.example/humanize", "eligible"),
+                ("listing", "https://two.example/humanize", "eligible"),
+            ],
+        )
+        self.assertFalse(any(
+            str(proof.get("url", "")).startswith("https://raw.githubusercontent.com/")
+            for proof in outcome["link_proofs"]
+        ))
+
+    def test_stale_ref_repair_validates_only_the_resolved_github_tree(self):
+        record = {
+            "id": "one", "repository": "owner/repo", "ref": "old",
+            "skill_path": "skills/humanize", "name": "Humanize",
+            "occurrences": [{"adapter": "skills-sh", "ref": "old"}],
+        }
+        transport = Transport([
+            AnonymousResponse(404, connection_address="8.8.8.8"),
+            AnonymousResponse(200, body=b'{"full_name":"owner/repo","default_branch":"main"}',
+                              connection_address="8.8.8.8"),
+            AnonymousResponse(200, body=b"---\nname: Humanize\n---\nRewrite prose.", connection_address="8.8.8.8"),
+            AnonymousResponse(200, body=b'<meta name="octolytics-dimension-repository_nwo" content="owner/repo">',
+                              connection_address="8.8.8.8"),
+            AnonymousResponse(200, body=b'<meta name="octolytics-dimension-repository_nwo" content="owner/repo">',
+                              connection_address="8.8.8.8"),
+        ])
+
+        outcome = validate_frozen_result_record(
+            "one", record,
+            destinations=[github_skill_destination(
+                "one", repository="owner/repo", ref="old", skill_path="skills/humanize",
+            )],
+            transport=transport, resolver=resolver, budget=Budget(), permits=Permits(),
+            deadline=time.monotonic() + 5,
+        )
+
+        self.assertEqual(outcome["target_proof"]["resolved"]["ref"], "main")
+        self.assertEqual(outcome["link_proofs"][0]["url"],
+                         "https://github.com/owner/repo/tree/main/skills/humanize")
+        called_urls = [url for _method, url, _kwargs in transport.calls]
+        self.assertIn("https://github.com/owner/repo/tree/main/skills/humanize", called_urls)
+        self.assertIn("https://github.com/owner/repo", called_urls)
+        self.assertNotIn("https://github.com/owner/repo/tree/old/skills/humanize", called_urls)
 
     def test_github_footer_proof_accepts_only_the_exact_repository_page(self):
         destination = github_repository_destination("footer", repository="bibryam/universal-skill-finder")
@@ -351,7 +430,7 @@ class DestinationValidationTests(unittest.TestCase):
         self.assertEqual((outcome["status"], outcome["link_proofs"][0]["status"]), ("eligible", "eligible"))
         self.assertNotIn("target_proof", outcome)
 
-    def test_exact_target_resolution_proves_content_and_exposes_only_a_derived_checked_link(self):
+    def test_exact_target_resolution_keeps_raw_content_separate_from_browser_proof(self):
         body = b"---\nname: Humanize\n---\nRewrite prose.\n"
         proof = resolve_github_target(
             "one", {"repository": "owner/repo", "ref": "main", "skill_path": "skills/humanize",
@@ -364,12 +443,15 @@ class DestinationValidationTests(unittest.TestCase):
         self.assertEqual(proof["resolved"]["url"],
                          "https://raw.githubusercontent.com/owner/repo/main/skills/humanize/SKILL.md")
         self.assertEqual(proof["resolved"]["browser_url"],
-                         "https://github.com/owner/repo/blob/main/skills/humanize/SKILL.md")
+                         "https://github.com/owner/repo/tree/main/skills/humanize")
+        self.assertEqual(proof["resolved"]["browse_url"],
+                         "https://github.com/owner/repo/tree/main/skills/humanize")
         self.assertEqual(proof["url"], proof["resolved"]["url"])
         self.assertEqual(proof["identity_basis"], "github-exact-skill-md-v1")
         self.assertEqual(proof["resolved"]["actual_name"], "Humanize")
         link = target_proof_link(proof)
-        self.assertEqual((link.status, link.role, link.url), ("eligible", "skill_destination", proof["url"]))
+        self.assertEqual((link.status, link.role, link.url), ("not_checked", "skill_destination", None))
+        self.assertIn("requires separate validation", link.detail)
 
     def test_pathless_resolution_uses_one_authoritative_default_then_root_only_with_matching_name(self):
         transport = Transport([

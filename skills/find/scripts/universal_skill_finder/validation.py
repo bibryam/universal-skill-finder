@@ -115,6 +115,7 @@ class _MetadataParser(HTMLParser):
         super().__init__(convert_charrefs=False)
         self.meta: dict[str, str] = {}
         self.canonicals: list[str] = []
+        self.anchors: list[str] = []
         self.headings: list[str] = []
         self.text: list[str] = []
         self._heading_depth = 0
@@ -126,6 +127,10 @@ class _MetadataParser(HTMLParser):
                 href = values.get("href")
                 if href and len(href) <= 4000:
                     self.canonicals.append(href)
+            if tag.lower() == "a":
+                href = values.get("href")
+                if href and len(href) <= 4000:
+                    self.anchors.append(href)
             if tag.lower() == "h1":
                 self._heading_depth += 1
             return
@@ -302,6 +307,22 @@ def _tessl_bundle_identity(response: AnonymousResponse, expected: object | None)
     return True if exact_route and _contains_phrase(text, package) and _contains_phrase(text, version) else None
 
 
+def _tessl_skill_identity(response: AnonymousResponse, expected: object | None) -> bool | None:
+    """Require exact Tessl skill, GitHub repository, and visible name identity."""
+    values = _expected_object(expected)
+    if values is None:
+        return None
+    repository, name, expected_url = values.get("repository"), values.get("name"), values.get("url")
+    if not repository or not name or not expected_url:
+        return None
+    parser = _html_document(response)
+    if parser is None:
+        return None
+    canonical = parser.canonicals + [parser.meta.get("og:url", "")]
+    repository_url = f"https://github.com/{repository}"
+    return True if expected_url in canonical and repository_url in parser.anchors and _heading_matches(parser, name) else None
+
+
 def _polyskill_identity(response: AnonymousResponse, expected: object | None) -> bool | None:
     """Polyskill's public singular detail route exposes its namespaced name."""
     values = _expected_object(expected)
@@ -340,7 +361,7 @@ def _github_identity(response: AnonymousResponse, expected: object | None) -> bo
     expected_parts = repository.split("/")
     if (parsed.scheme != "https" or parsed.hostname not in {"github.com", "www.github.com"}
             or len(expected_parts) != 2 or parts[:2] != expected_parts or len(parts) < 4
-            or parts[2] not in {"tree", "blob"} or parts[3] != ref):
+            or parts[2] != "tree" or parts[3] != ref):
         return False
     actual_path = "/".join(parts[4:]) or "."
     if actual_path != skill_path:
@@ -375,6 +396,7 @@ SKILLHUB_PRO_PROFILE = ProviderProfile(
 )
 CLAWHUB_PROFILE = ProviderProfile("clawhub-html-install-ref-v1", _clawhub_identity)
 TESSL_BUNDLE_PROFILE = ProviderProfile("tessl-registry-html-version-v1", _tessl_bundle_identity)
+TESSL_SKILL_PROFILE = ProviderProfile("tessl-registry-skill-html-v1", _tessl_skill_identity)
 POLYSKILL_PROFILE = ProviderProfile("polyskill-html-route-v1", _polyskill_identity)
 # Compatibility name for the public, anonymous SkillHub contract.
 SKILLHUB_PROFILE = SKILLHUB_PUBLIC_PROFILE
@@ -427,11 +449,12 @@ _REVIEWED_ROUTES = {
     "skillsmp": _ReviewedRoute("skillsmp.com", "listing", ("creators",), 4),
     "skillhub-public": _ReviewedRoute("skills.palebluedot.live", "listing", ("skill",)),
     "skillhub-pro": _ReviewedRoute("www.skillhub.club", "listing", ("skill",)),
-    "github-repo": _ReviewedRoute("github.com", "repository", ()),
-    "github-code-search": _ReviewedRoute("github.com", "repository", ()),
+    "github-repo": _ReviewedRoute("github.com", "skill_destination", ()),
+    "github-code-search": _ReviewedRoute("github.com", "skill_destination", ()),
     "github-repository-page": _ReviewedRoute("github.com", "repository", (), 2),
     "clawhub": _ReviewedRoute("clawhub.ai", "listing", (), 3),
     "tessl": _ReviewedRoute("tessl.io", "bundle_listing", ("registry",), 4),
+    "tessl-skill": _ReviewedRoute("tessl.io", "listing", ("registry", "skills", "github"), 6),
     "polyskill": _ReviewedRoute("polyskill.ai", "listing", ("skill",)),
 }
 
@@ -471,6 +494,20 @@ def _matches_reviewed_route(adapter: str, role: str, url: str | None) -> bool:
     if (parsed.scheme != "https" or parsed.hostname not in allowed_hosts or port not in {None, 443}
             or parsed.username or parsed.password or parsed.query or parsed.params or parsed.fragment):
         return False
+    if adapter in {"github-repo", "github-code-search"}:
+        # The ref is one URL segment even when it contains a percent-encoded
+        # slash. Decode it independently from the directory path so a valid
+        # ``feature/name`` ref is not mistaken for traversal.
+        raw_segments = parsed.path.strip("/").split("/")
+        if len(raw_segments) < 4 or raw_segments[2] != "tree":
+            return False
+        owner, project, ref = (unquote(raw_segments[0]), unquote(raw_segments[1]), unquote(raw_segments[3]))
+        skill_path = "/".join(unquote(part) for part in raw_segments[4:]) or "."
+        return (
+            parse_github_repository(f"{owner}/{project}") == f"{owner}/{project}"
+            and safe_install_reference(ref) == ref
+            and safe_skill_path(skill_path) == skill_path
+        )
     segments = _safe_path_segments(parsed.path)
     if segments is None:
         return False
@@ -482,16 +519,15 @@ def _matches_reviewed_route(adapter: str, role: str, url: str | None) -> bool:
         return tuple(segments[:1]) == rule.prefix and len(segments) >= 3
     if adapter == "clawhub":
         return len(segments) == 3 and segments[1] == "skills"
-    if adapter == "tessl":
+    if adapter in {"tessl", "tessl-skill"}:
         return tuple(segments[:len(rule.prefix)]) == rule.prefix and len(segments) == rule.exact_segments
     if adapter == "github-repository-page":
         return len(segments) == 2
-    if adapter in {"github-repo", "github-code-search"}:
-        return len(segments) >= 4 and segments[2] in {"tree", "blob"}
     return False
 
 
 _PROFILE_ADAPTERS = {profile.name: adapter for adapter, profile in _PROFILES.items()}
+_PROFILE_ADAPTERS[TESSL_SKILL_PROFILE.name] = "tessl-skill"
 
 
 def _matches_profile_route(profile: ProviderProfile, role: str, url: str) -> bool:
@@ -523,6 +559,11 @@ def _derived_expected_identity(adapter: str, role: str, url: str | None,
         values.setdefault("package", "/".join(segments[1:3]))
         values.setdefault("version", segments[3])
         values.setdefault("url", url)
+    elif (adapter == "tessl" and role == "listing" and len(segments) == 6
+          and segments[:3] == ["registry", "skills", "github"]):
+        values.setdefault("repository", "/".join(segments[3:5]))
+        values.setdefault("name", segments[5])
+        values.setdefault("url", url)
     elif adapter == "tessl" and role == "repository" and parsed.hostname == "github.com" and len(segments) == 2:
         values.setdefault("repository", "/".join(segments))
         values.setdefault("url", url)
@@ -543,9 +584,14 @@ def reviewed_destination(candidate_id: str, *, role: str, url: str | None, adapt
         profile = GITHUB_REPOSITORY_PROFILE
         if not _matches_reviewed_route("github-repository-page", role, url):
             profile = None
+    elif adapter == "tessl" and role == "listing":
+        profile = TESSL_SKILL_PROFILE
+        if not _matches_reviewed_route("tessl-skill", role, url):
+            profile = None
     else:
         profile = reviewed_profile(adapter)
-    if profile is None or (adapter != "tessl" or role != "repository") and not _matches_reviewed_route(adapter, role, url):
+    tessl_special = adapter == "tessl" and role in {"repository", "listing"}
+    if profile is None or not tessl_special and not _matches_reviewed_route(adapter, role, url):
         profile = None
     return Destination(candidate_id, role, url, expected, profile)
 
@@ -572,20 +618,22 @@ def github_skill_destination(candidate_id: str, *, repository: str, ref: str, sk
     """Construct a GitHub tree URL and require exact owner/repository/ref/path proof."""
     pieces = repository.split("/")
     path_parts = [] if skill_path == "." else skill_path.split("/")
-    if (len(pieces) != 2 or not all(pieces) or not ref or any(not part or part in {".", ".."} for part in path_parts)):
+    if (parse_github_repository(repository) != repository or safe_install_reference(ref) != ref
+            or safe_skill_path(skill_path) != skill_path or len(pieces) != 2
+            or any(not part or part in {".", ".."} for part in path_parts)):
         raise ValueError("GitHub destination identity is invalid")
     url = "https://github.com/" + "/".join(quote(part, safe="") for part in pieces)
     url += "/tree/" + quote(ref, safe="")
     if path_parts:
         url += "/" + "/".join(quote(part, safe="") for part in path_parts)
     expected = {"repository": repository, "ref": ref, "skill_path": skill_path, "url": url}
-    return Destination(candidate_id, "repository", url, expected, GITHUB_SKILL_PROFILE)
+    return Destination(candidate_id, "skill_destination", url, expected, GITHUB_SKILL_PROFILE)
 
 
 def github_repository_destination(candidate_id: str, *, repository: str) -> Destination:
     """Construct an exact public GitHub repository-page proof request."""
     pieces = repository.split("/")
-    if len(pieces) != 2 or not all(pieces) or any(piece in {".", ".."} for piece in pieces):
+    if parse_github_repository(repository) != repository or len(pieces) != 2:
         raise ValueError("GitHub repository identity is invalid")
     url = "https://github.com/" + "/".join(quote(piece, safe="") for piece in pieces)
     return Destination(candidate_id, "repository", url, {"repository": repository, "url": url}, GITHUB_REPOSITORY_PROFILE)
@@ -1025,7 +1073,9 @@ def validate_destination(destination: Destination, *, transport: Transport, reso
                          budget: Any, permits: Any, deadline: Deadline | float, phase: str = "final",
                          now: Callable[[], str] = _checked_at) -> LinkProof:
     """Return a disjoint proof status, never trusting generic page text."""
-    if destination.role not in {"listing", "bundle_listing", "source_page", "repository", "unavailable"}:
+    if destination.role not in {
+        "listing", "bundle_listing", "source_page", "repository", "skill_destination", "unavailable",
+    }:
         return LinkProof(destination.role, destination.url, "not_checked", detail="unsupported destination role")
     if not destination.url or destination.role == "unavailable":
         return LinkProof(destination.role, destination.url, "not_checked", detail="no inspectable public destination")
@@ -1171,10 +1221,13 @@ def _github_urls(repository: str, ref: str, skill_path: str) -> tuple[str, str]:
     owner, project = repository.split("/", 1)
     parts = [] if skill_path == "." else skill_path.split("/")
     quoted_path = "/".join(quote(part, safe="") for part in (*parts, "SKILL.md"))
+    quoted_directory = "/".join(quote(part, safe="") for part in parts)
     quoted_ref = quote(ref, safe="")
     raw = f"https://raw.githubusercontent.com/{quote(owner, safe='')}/{quote(project, safe='')}/{quoted_ref}/{quoted_path}"
-    browser = f"https://github.com/{quote(owner, safe='')}/{quote(project, safe='')}/blob/{quoted_ref}/{quoted_path}"
-    return raw, browser
+    browse = f"https://github.com/{quote(owner, safe='')}/{quote(project, safe='')}/tree/{quoted_ref}"
+    if quoted_directory:
+        browse += "/" + quoted_directory
+    return raw, browse
 
 
 def _target_get(url: str, *, transport: Transport, resolver: Resolver, budget: Any, permits: Any,
@@ -1327,14 +1380,14 @@ def resolve_github_target(candidate_id: str, reported_target: Mapping[str, Any] 
             return cached
 
     def fetch(target_ref: str, target_path: str, *, require_match: bool) -> dict[str, Any]:
-        raw_url, browser_url = _github_urls(repository, target_ref, target_path)
+        raw_url, browse_url = _github_urls(repository, target_ref, target_path)
         response, detail = _target_get(
             raw_url, transport=transport, resolver=resolver, budget=budget, permits=permits,
             deadline=resolved_deadline, max_bytes=MAX_TARGET_BYTES, phase=phase,
         )
         resolved = {
             "repository": repository, "ref": target_ref, "skill_path": target_path,
-            "url": raw_url, "browser_url": browser_url,
+            "url": raw_url, "browser_url": browse_url, "browse_url": browse_url,
         }
         if response is None:
             return _target_proof(status="inconclusive", reported=reported, resolved=resolved,
@@ -1378,18 +1431,23 @@ def resolve_github_target(candidate_id: str, reported_target: Mapping[str, Any] 
 
 
 def target_proof_link(proof: Mapping[str, Any]) -> LinkProof:
-    """Convert only a fresh exact-target proof into a primary checked link."""
+    """Do not promote exact content evidence into a human navigation proof.
+
+    The raw ``SKILL.md`` GET establishes install identity and content hashing.
+    Its related GitHub tree destination must pass ``validate_destination`` as a
+    separate anonymous browser-page request before it can be displayed.
+    """
     if not isinstance(proof, Mapping) or proof.get("kind") != "github" or proof.get("status") != "eligible":
         return LinkProof("skill_destination", None, "not_checked", detail="exact target proof is unavailable")
-    url = proof.get("url")
     resolved = proof.get("resolved")
-    if (not isinstance(url, str) or not isinstance(resolved, Mapping)
+    if (not isinstance(proof.get("url"), str) or not isinstance(resolved, Mapping)
             or not all(isinstance(resolved.get(key), str) and resolved.get(key) for key in ("repository", "ref", "skill_path"))
             or proof.get("identity_basis") != "github-exact-skill-md-v1"):
         return LinkProof("skill_destination", None, "not_checked", detail="exact target proof is malformed")
     return LinkProof(
-        "skill_destination", url, "eligible", method=str(proof.get("method")), checked_at=proof.get("checked_at"),
-        identity_basis="github-exact-skill-md-v1", detail="exact SKILL.md target proof",
+        "skill_destination", None, "not_checked", method=str(proof.get("method")), checked_at=proof.get("checked_at"),
+        identity_basis="github-exact-skill-md-v1",
+        detail="exact SKILL.md content proof is internal; GitHub tree requires separate validation",
     )
 
 

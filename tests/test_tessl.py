@@ -156,6 +156,13 @@ class TesslTests(unittest.TestCase):
         self.assertEqual(result.repository, "example/skills")
         self.assertEqual(result.skill_path, "skills/pdf")
         self.assertEqual(result.canonical_url, "https://github.com/example/skills")
+        self.assertEqual(result.listing_url, "https://tessl.io/registry/skills/github/example/skills/pdf")
+        self.assertEqual(result.listing_role, "listing")
+        self.assertEqual(result.listing_derivation, "connector_reviewed")
+        self.assertEqual(result.source_evidence["expected_identity"], {
+            "repository": "example/skills", "name": "pdf",
+        })
+        self.assertEqual(result.link_proofs, [])
         self.assertEqual(result.publisher, "example")
         self.assertEqual(result.name, "pdf")
         self.assertEqual(result.native_rank, 1)
@@ -163,7 +170,36 @@ class TesslTests(unittest.TestCase):
         self.assertIsNone(result.ref)
         self.assertIsNone(result.content_sha256)
         self.assertEqual(result.install, {})
-        self.assertIsNone(Candidate.from_dict(result.to_dict()).ref)
+        restored = Candidate.from_dict(result.to_dict())
+        self.assertIsNone(restored.ref)
+        self.assertEqual(restored.listing_url, result.listing_url)
+        self.assertEqual(restored.source_evidence["expected_identity"], result.source_evidence["expected_identity"])
+
+    def test_individual_listing_route_uses_repository_and_skill_name_not_file_path(self):
+        item = row(
+            name="pdf-creator", sourceUrl="https://github.com/fernandezbaptiste/claude-code-skills",
+            path="pdf-creator/SKILL.md",
+        )
+        result = self.search(payload([item]))[0][0]
+        self.assertEqual(result.canonical_url, "https://github.com/fernandezbaptiste/claude-code-skills")
+        self.assertEqual(result.skill_path, "pdf-creator")
+        self.assertEqual(
+            result.listing_url,
+            "https://tessl.io/registry/skills/github/fernandezbaptiste/claude-code-skills/pdf-creator",
+        )
+        self.assertNotEqual(result.listing_url, result.canonical_url)
+
+    def test_unsafe_individual_names_never_become_tessl_listing_urls(self):
+        for name in (" pdf", "pdf forms", "pdf/forms", "pdf?secret=value", "-pdf", "p" * 101, "pdf\nforms"):
+            with self.subTest(name=name):
+                results, context, _ = self.search(payload([row(name=name)]))
+                self.assertEqual(len(results), 1)
+                self.assertFalse(context.incomplete_results)
+                self.assertEqual(results[0].canonical_url, "https://github.com/example/skills")
+                self.assertIsNone(results[0].listing_url)
+                self.assertEqual(results[0].listing_role, "unavailable")
+                self.assertEqual(results[0].listing_derivation, "unavailable")
+                self.assertNotIn("expected_identity", results[0].source_evidence)
 
     def test_actual_skill_file_path_becomes_directory_including_hidden_roots(self):
         for path, expected in (("SKILL.md", "."), (".agents/skills/pdf/SKILL.md", ".agents/skills/pdf"),

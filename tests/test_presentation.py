@@ -15,7 +15,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "skills" / "find" /
 
 from universal_skill_finder.cli import main
 from universal_skill_finder.models import Coverage, Result, SearchReport, UNSAFE_LOCATION_WARNING
-from universal_skill_finder.presentation import cell, install_command, render_markdown, skill_link
+from universal_skill_finder.presentation import cell, install_command, installation_fallback, render_markdown, skill_link
 from test_search_defaults import default_search_fixture
 
 
@@ -43,10 +43,16 @@ def result(**changes) -> Result:
         "actual_name": values["name"], "content_sha256": "0" * 64,
         "url": exact_url, "method": "anonymous_exact_skill_md_get", "identity_basis": "github-exact-skill-md-v1",
     } if checked_url else {})
-    values.setdefault("link_proofs", [{
+    link_proofs = ([{
         "role": "skill_destination", "url": checked_url, "status": "eligible",
         "method": "fixture", "identity_basis": "fixture_exact_skill",
     }] if checked_url else [])
+    if repository:
+        link_proofs.append({
+            "role": "repository", "url": f"https://github.com/{repository}", "status": "eligible",
+            "method": "fixture", "identity_basis": "fixture_repository",
+        })
+    values.setdefault("link_proofs", link_proofs)
     values.setdefault("install", {"kind": "github", "repository": values["repository"],
                                   "skill_path": values["skill_path"], "ref": values["ref"], "requires_approval": True})
     return Result(**values)
@@ -126,7 +132,7 @@ class MarkdownReportTests(unittest.TestCase):
         fields = ["Read and fill PDF forms", "Location:", "Found on:", "Signals:", "Inspect and install:"]
         self.assertEqual([card.index(field) for field in fields], sorted(card.index(field) for field in fields))
         self.assertNotIn("npx skills@", text)
-        self.assertIn("**Location:** anthropics/skills ›", text)
+        self.assertIn("**Location:** [anthropics/skills](https://github.com/anthropics/skills) ›", text)
         self.assertIn("type **Inspect #1**  **Install #1**", text)
         self.assertNotIn("/not-displayed/private.json", text)
         self.assertIn("does not display or execute", text)
@@ -191,10 +197,24 @@ class MarkdownReportTests(unittest.TestCase):
         row = result(repository=None, skill_path=None, ref=None, canonical_url="javascript:alert(1)", install={})
         self.assertIn("skill link unavailable", skill_link(row))
         row.occurrences = [{"canonical_url": "https://registry.example/pdf"}]
+        self.assertIn("skill link unavailable", skill_link(row))
+        row.link_proofs = [{"role": "listing", "url": "https://registry.example/pdf", "status": "eligible"}]
         self.assertEqual(skill_link(row), "[pdf](https://registry.example/pdf)")
         local = Path.cwd() / "local skills"
         row.install = {"kind": "local", "path": str(local)}
         self.assertIn(local.as_uri(), skill_link(row))
+
+    def test_raw_skill_files_are_never_navigation_fallbacks(self):
+        raw = "https://raw.githubusercontent.com/example/skills/main/pdf/SKILL.md"
+        blob = "https://github.com/example/skills/blob/main/pdf/SKILL.md"
+        for url in (raw, blob):
+            with self.subTest(url=url):
+                row = result(repository=None, skill_path=None, ref=None, canonical_url=url,
+                             occurrences=[], install={})
+                self.assertEqual(skill_link(row), "pdf (skill link unavailable)")
+                fallback = installation_fallback(row, "target unresolved")
+                self.assertNotIn(url, fallback)
+                self.assertIn("Listing link unavailable", fallback)
 
     def test_cli_markdown_keeps_default_top_ten_and_all_enabled_sources(self):
         with TemporaryDirectory() as temp:

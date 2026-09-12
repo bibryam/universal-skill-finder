@@ -10,7 +10,7 @@ import stat
 import time
 import threading
 from dataclasses import dataclass
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from pathlib import Path
 from typing import Any, Callable
 
@@ -223,7 +223,8 @@ class Cache:
             return None
 
     def write(self, namespace: str, key: str, value: Any, *,
-              can_publish: Callable[[], bool] | None = None) -> bool:
+              can_publish: Callable[[], bool] | None = None,
+              publish_lock: Any = None) -> bool:
         """Atomically publish an optional cache entry when its caller still owns it.
 
         ``can_publish`` is deliberately checked again at the rename boundary.
@@ -257,9 +258,13 @@ class Cache:
                     # This is intentionally immediately adjacent to the
                     # atomic publication step. Do not move it above payload
                     # encoding or temporary-file I/O.
-                    if can_publish is not None and not can_publish():
-                        return False
-                    os.replace(temporary, destination, src_dir_fd=directory_fd, dst_dir_fd=directory_fd)
+                    # A caller with a separately mutable publication gate can
+                    # share its lock here. This makes closing that gate and the
+                    # final check/replace one atomic ordering boundary.
+                    with publish_lock if publish_lock is not None else nullcontext():
+                        if can_publish is not None and not can_publish():
+                            return False
+                        os.replace(temporary, destination, src_dir_fd=directory_fd, dst_dir_fd=directory_fd)
                     return True
                 finally:
                     try:

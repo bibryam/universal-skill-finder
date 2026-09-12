@@ -13,13 +13,13 @@ Before running the finder, its launcher checks Python and SSL. A missing or unsu
 From GitHub:
 
 ```bash
-npx skills add bibryam/universal-skill-finder --skill find --global
+npx skills@1.5.23 add bibryam/universal-skill-finder --skill find --global
 ```
 
 Or from the root of a local checkout:
 
 ```bash
-npx skills add . --skill find --global
+npx skills@1.5.23 add . --skill find --global
 ```
 
 The installer lets you choose which agents receive the skill. `--global` makes it available across projects; omit it for a project installation. To choose an agent directly, append the corresponding option:
@@ -38,7 +38,7 @@ These commands work in POSIX shells and PowerShell. Add `--copy` if you prefer i
 
 Start a new agent session. Ask “Use Universal Skill Finder to find skills for PDF forms,” invoke `/find pdf forms` in Claude Code or `$find pdf forms` in Codex, or use your agent's skill picker. Other hosts can search and inspect repository links; generated installation commands and installed-skill checks currently support Codex and Claude Code only.
 
-[Skills CLI documentation](https://github.com/vercel-labs/skills#install-a-skill) covers additional agents and options. It is a separate installer with its own [telemetry settings](https://github.com/vercel-labs/skills#telemetry); Universal Skill Finder's engine has no telemetry.
+[Skills CLI 1.5.23 documentation](https://github.com/vercel-labs/skills/tree/v1.5.23#install-a-skill) covers additional agents and options. The pinned version sends anonymous usage telemetry and requests security-audit data for confirmed-public GitHub repositories by default. Set `DISABLE_TELEMETRY=1` or `DO_NOT_TRACK=1` to disable both. Universal Skill Finder's engine has no telemetry.
 
 ## Manual copy: without Node.js
 
@@ -139,10 +139,10 @@ This shortened example changes only the listed IDs; other sources keep their def
 For a Skills CLI installation from GitHub:
 
 ```bash
-npx skills update find --global
+npx skills@1.5.23 update find --global
 ```
 
-Use `--project` instead of `--global` for project scope. The updater skips local sources: after updating a local checkout, rerun the original `npx skills add . --skill find --global` command with the same scope and agent selection. Manual copies must be replaced with the complete updated `skills/find` folder.
+Use `--project` instead of `--global` for project scope. The updater skips local sources: after updating a local checkout, rerun the original `npx skills@1.5.23 add . --skill find --global` command with the same scope and agent selection. Manual copies must be replaced with the complete updated `skills/find` folder.
 
 
 For a Git-backed Codex marketplace:
@@ -166,7 +166,7 @@ Start a new task/session afterward. For a local marketplace, first update the ch
 For a Skills CLI installation:
 
 ```bash
-npx skills remove find --global
+npx skills@1.5.23 remove find --global
 ```
 
 Omit `--global` for project scope. Add the same `--agent` selector used during installation if removing it from one agent only. For a manual copy, remove only the `find` folder you installed.

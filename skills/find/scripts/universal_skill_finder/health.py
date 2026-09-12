@@ -55,7 +55,16 @@ class HealthStore:
     def __init__(self, cache: Cache, *, clock=time.time):
         self.cache = cache
         self.clock = clock
+        # Only operations for the same persisted health scope need in-process
+        # serialization. A single global lock lets slow filesystem work for one
+        # source consume the 50 ms safety budget of unrelated sources.
         self._lock = threading.RLock()
+        self._scope_locks: dict[str, threading.RLock] = {}
+
+    def _scope_lock(self, scope: HealthScope) -> threading.RLock:
+        key = scope.key()
+        with self._lock:
+            return self._scope_locks.setdefault(key, threading.RLock())
 
     def _read(self, scope: HealthScope) -> _State:
         cached = self.cache.read("health", scope.key())
@@ -82,7 +91,8 @@ class HealthStore:
     @contextmanager
     def _guard(self, scope: HealthScope):
         started = time.monotonic()
-        if not self._lock.acquire(timeout=0.05):
+        scope_lock = self._scope_lock(scope)
+        if not scope_lock.acquire(timeout=0.05):
             yield False
             return
         try:
@@ -90,7 +100,7 @@ class HealthStore:
             with self.cache.exclusive_lease("health", scope.key(), timeout=remaining) as acquired:
                 yield acquired
         finally:
-            self._lock.release()
+            scope_lock.release()
 
     def before_request(self, scope: HealthScope, now: float | None = None) -> HealthDecision:
         current = self.clock() if now is None else _required_number(now)

@@ -191,13 +191,19 @@ class PosixPrerequisiteTests(unittest.TestCase):
 
 @unittest.skipUnless(POWERSHELL, "PowerShell is not installed")
 class PowerShellPrerequisiteTests(unittest.TestCase):
+    def assert_product_state_absent(self, root: Path) -> None:
+        # PowerShell may initialize its own files under the XDG base directories.
+        # The launcher contract is that the finder itself creates no state during
+        # preflight, so assert only against the product-owned subdirectories.
+        self.assertFalse((root / "config" / "universal-skill-finder").exists())
+        self.assertFalse((root / "cache" / "universal-skill-finder").exists())
+
     def test_missing_python_fails_gracefully(self):
         with TemporaryDirectory() as temp:
             root = Path(temp)
             result = subprocess.run([POWERSHELL, "-NoProfile", "-File", str(SCRIPTS / "run.ps1"), "--check"],
                                     text=True, capture_output=True, env=isolated_environment(root, str(root)))
-            self.assertFalse((root / "config").exists())
-            self.assertFalse((root / "cache").exists())
+            self.assert_product_state_absent(root)
         self.assertEqual(result.returncode, 4, result.stdout + result.stderr)
         self.assertIn("no compatible interpreter", result.stderr)
         self.assertNotIn("Traceback", result.stderr)
@@ -208,8 +214,7 @@ class PowerShellPrerequisiteTests(unittest.TestCase):
             path = str(Path(sys.executable).parent) + os.pathsep + os.environ.get("PATH", "")
             result = subprocess.run([POWERSHELL, "-NoProfile", "-File", str(SCRIPTS / "run.ps1"), "--check"],
                                     text=True, capture_output=True, env=isolated_environment(root, path))
-            self.assertFalse((root / "config").exists())
-            self.assertFalse((root / "cache").exists())
+            self.assert_product_state_absent(root)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertIn("Prerequisites OK", result.stdout)
 
@@ -226,12 +231,14 @@ class PowerShellPrerequisiteTests(unittest.TestCase):
             (package / "cli.py").write_text("import json, sys\ndef main():\n    print(json.dumps(sys.argv[1:]))\n    return 2\n", encoding="utf-8")
             arguments = ["--config", str(root / "config with spaces.json"), "search", 'PDF forms with "quotes" & more', "", "quote ' and \\path\\", "--json"]
             literals = ", ".join("'" + item.replace("'", "''") + "'" for item in arguments)
-            command = "& '" + str(copied / "run.ps1").replace("'", "''") + "' @(" + literals + "); exit $LASTEXITCODE"
+            # A literal @(...), unlike a named @array, is one nested argument to
+            # a PowerShell script. Use real array splatting so this exercises the
+            # launcher's native-process transport rather than an invalid fixture.
+            command = "$finderFixtureArguments = @(" + literals + "); & '" + str(copied / "run.ps1").replace("'", "''") + "' @finderFixtureArguments; exit $LASTEXITCODE"
             path = str(Path(sys.executable).parent) + os.pathsep + os.environ.get("PATH", "")
             result = subprocess.run([POWERSHELL, "-NoProfile", "-Command", command], text=True, capture_output=True,
                                     env=isolated_environment(root, path))
-            self.assertFalse((root / "config").exists())
-            self.assertFalse((root / "cache").exists())
+            self.assert_product_state_absent(root)
         self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
         self.assertEqual(json.loads(result.stdout), arguments)
 
@@ -244,8 +251,7 @@ class PowerShellPrerequisiteTests(unittest.TestCase):
             path = str(root) + os.pathsep + str(Path(sys.executable).parent)
             result = subprocess.run([POWERSHELL, "-NoProfile", "-File", str(SCRIPTS / "run.ps1"), "--check"],
                                     text=True, capture_output=True, env=isolated_environment(root, path))
-            self.assertFalse((root / "config").exists())
-            self.assertFalse((root / "cache").exists())
+            self.assert_product_state_absent(root)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertIn("Prerequisites OK", result.stdout)
 

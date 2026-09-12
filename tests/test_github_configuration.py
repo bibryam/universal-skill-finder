@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import sys
 import unittest
 from copy import deepcopy
@@ -41,7 +42,11 @@ class GitHubConfigurationTests(unittest.TestCase):
             self.assertEqual(ADAPTER_SPECS[source["adapter"]].cache_policy, "query")
 
     def test_enable_joins_default_search_and_missing_token_is_isolated(self):
-        with TemporaryDirectory() as directory, patch.dict("os.environ", {}, clear=True):
+        with TemporaryDirectory() as directory, patch.dict(os.environ, {}, clear=False):
+            # Remove only the credential under test. A spawned Windows Python
+            # requires OS variables such as SystemRoot; clearing the whole
+            # environment tests a broken process fixture, not missing auth.
+            os.environ.pop("UNIVERSAL_SKILL_FINDER_GITHUB_TOKEN", None)
             overlay = Path(directory) / "overlay.json"
             config = load_config(str(overlay))
             set_source_enabled(config, "github-code-search", True)
@@ -89,7 +94,10 @@ class GitHubConfigurationTests(unittest.TestCase):
             self.assertNotIn("test-secret-not-a-real-token", json.dumps(rows))
 
     def test_unrelated_token_name_is_not_automatically_adopted(self):
-        with TemporaryDirectory() as directory, patch.dict("os.environ", {"TEAM_GITHUB_TOKEN": "synthetic-fixture"}, clear=True):
+        with TemporaryDirectory() as directory, patch.dict(
+            os.environ, {"TEAM_GITHUB_TOKEN": "synthetic-fixture"}, clear=False,
+        ):
+            os.environ.pop("UNIVERSAL_SKILL_FINDER_GITHUB_TOKEN", None)
             config = load_config(str(Path(directory) / "overlay.json"))
             set_source_enabled(config, "github-code-search", True)
             config = load_config(str(config.overlay_path))

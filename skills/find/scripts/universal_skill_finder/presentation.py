@@ -6,7 +6,7 @@ import math
 import re
 from collections.abc import Mapping
 from pathlib import Path
-from urllib.parse import quote, urlparse
+from urllib.parse import quote, unquote, urlparse
 
 from .models import Coverage, Result, SearchReport, UNSAFE_LOCATION_WARNING
 from .text import clean_text, parse_github_repository, safe_skill_path, safe_web_url
@@ -30,55 +30,66 @@ def cell(value: object, limit: int = 2000) -> str:
     return _UNTRUSTED_URL_SCHEME.sub(lambda match: match.group(1) + "[:]//", text)
 
 
+def _is_content_only_github_url(value: object) -> bool:
+    """Keep machine-readable skill files out of human navigation surfaces."""
+    url = safe_web_url(value)
+    if not url:
+        return False
+    parsed = urlparse(url)
+    hostname = (parsed.hostname or "").casefold().rstrip(".")
+    if hostname == "raw.githubusercontent.com":
+        return True
+    if hostname not in {"github.com", "www.github.com"}:
+        return False
+    parts = [unquote(part).casefold() for part in parsed.path.strip("/").split("/")]
+    return len(parts) >= 5 and parts[2] in {"blob", "raw"} and parts[-1] == "skill.md"
+
+
+def _navigation_url(value: object) -> str | None:
+    """Return only web destinations suitable for browsing, not content fetches."""
+    url = safe_web_url(value)
+    return None if not url or _is_content_only_github_url(url) else url
+
+
 def _link(label: str, url: str) -> str:
     # Parentheses, brackets, quotes and table delimiters cannot break out of the
     # destination. Preserve existing percent escapes and URL query semantics.
+    if _is_content_only_github_url(url):
+        return cell(label)
     destination = quote(url, safe="/:?#@!$&*+,;=%~._-")
     return f"[{cell(label)}]({destination})"
 
 
 def skill_link(result: Result) -> str:
-    repository = parse_github_repository(result.repository)
-    path = safe_skill_path(result.skill_path)
-    if repository and path and result.ref:
-        # A clickable GitHub URL can represent refs unsupported by the installer.
-        ref = quote(result.ref, safe="")
-        location = "" if path == "." else "/" + quote(path, safe="/")
-        return _link(result.name, f"https://github.com/{repository}/tree/{ref}{location}")
-    link = safe_web_url(result.canonical_url)
-    if link:
-        return _link(result.name, link)
+    """Compatibility helper with the same proof gate as schema-2 reports."""
     if result.install.get("kind") == "local":
         path_value = result.install.get("path")
         if isinstance(path_value, str) and Path(path_value).is_absolute():
             return _link(result.name, Path(path_value).as_uri())
-    if repository:
-        return _link(result.name, f"https://github.com/{repository}")
-    for occurrence in result.occurrences:
-        link = safe_web_url(occurrence.get("canonical_url"))
-        if link:
-            return _link(result.name, link)
+    proof = _proof_for(
+        result, _SKILL_BROWSE_ROLES | _LISTING_ROLES | {"repository"}, accepted=_ELIGIBLE,
+    )
+    link = _proof_url(proof, accepted=_ELIGIBLE) if proof else None
+    if link:
+        return _link(result.name, link)
     return f"{cell(result.name)} (skill link unavailable)"
 
 
 def installation_fallback(result: Result, reason: str) -> str:
     """A failed command proposal still offers a useful, validated destination."""
-    repository = parse_github_repository(result.repository)
-    if repository:
-        url = f"https://github.com/{repository}"
-        path = safe_skill_path(result.skill_path)
-        if path and result.ref:
-            url += "/tree/" + quote(result.ref, safe="")
-            if path != ".":
-                url += "/" + quote(path, safe="/")
-        action = _link("Open repository", url)
+    tree_url = _checked_github_tree_url(result)
+    repository_url = _checked_github_repository_url(result)
+    proof = _proof_for(result, _LISTING_ROLES, accepted=_CHECKED)
+    listing_url = _proof_url(proof, accepted=_CHECKED) if proof else None
+    if tree_url:
+        action = _link("Open skill directory", tree_url)
+    elif repository_url:
+        action = _link("Open repository", repository_url)
+    elif listing_url:
+        action = _link("Open listing", listing_url)
     else:
-        url = safe_web_url(result.canonical_url)
-        if not url:
-            url = next((safe_web_url(item.get("canonical_url")) for item in result.occurrences
-                        if safe_web_url(item.get("canonical_url"))), None)
-        action = _link("Open listing", url) if url else "Listing link unavailable"
-        if not url and result.install.get("kind") == "local":
+        action = "Listing link unavailable"
+        if result.install.get("kind") == "local":
             local = result.install.get("path")
             if isinstance(local, str) and Path(local).is_absolute():
                 action = _link("Open local directory", Path(local).as_uri())
@@ -321,7 +332,9 @@ def render_markdown(report: SearchReport, *, assistant: str | None = None, dry_r
 # release order. It never validates, ranks, opens files, or contacts a network.
 _ELIGIBLE = {"eligible", "verified"}
 _CHECKED = _ELIGIBLE | {"reachable"}
-_ROLE_PRIORITY = {"listing": 0, "bundle_listing": 1, "source_page": 2, "repository": 3}
+_ATTRIBUTION_ROLE_PRIORITY = {"listing": 0, "bundle_listing": 1, "source_page": 2, "repository": 3}
+_SKILL_BROWSE_ROLES = {"skill_directory", "skill_browse", "skill", "skill_destination"}
+_LISTING_ROLES = {"listing", "bundle_listing", "source_page"}
 
 
 def _text(value: object, limit: int = 400) -> str:
@@ -333,14 +346,19 @@ def _text(value: object, limit: int = 400) -> str:
 
 
 def _status(item: object) -> str:
-    return str(_value(item, "status", "")).lower()
+    # Trust-bearing status tokens are a closed, lowercase protocol. Do not
+    # normalize attacker-controlled spellings into authority at render time.
+    value = _value(item, "status", "")
+    return value if isinstance(value, str) else ""
 
 
 def _proof_url(proof: object, *, accepted: set[str] = _ELIGIBLE) -> str | None:
     if _status(proof) not in accepted:
         return None
+    # Eligibility belongs to the checked destination itself. Never transfer it
+    # to sibling metadata such as browser_url or browse_url.
     url = _value(proof, "url") or _value(proof, "final_url")
-    return safe_web_url(url)
+    return _navigation_url(url)
 
 
 def _proofs(item: object) -> list[object]:
@@ -352,15 +370,61 @@ def _proofs(item: object) -> list[object]:
     return [primary] if primary is not None else []
 
 
+def _attribution_proofs(item: object) -> list[object]:
+    for field in ("found_on", "attributions", "source_attributions"):
+        found = _items(_value(item, field, []))
+        if found:
+            return found
+    return []
+
+
+def _github_navigation_kind(url: str | None) -> str | None:
+    if not url:
+        return None
+    parsed = urlparse(url)
+    if parsed.scheme != "https" or (parsed.hostname or "").casefold() not in {"github.com", "www.github.com"}:
+        return None
+    parts = [unquote(part) for part in parsed.path.strip("/").split("/")]
+    if len(parts) == 2 and parse_github_repository(url):
+        return "repository"
+    if len(parts) >= 4 and parts[2].casefold() == "tree" and parse_github_repository(url):
+        return "skill_directory"
+    return None
+
+
+def _proof_semantic_priority(proof: object, url: str) -> int:
+    """Rank destinations by browsing value, independent of URL spelling."""
+    role = str(_value(proof, "role", "")).lower()
+    github_kind = _github_navigation_kind(url)
+    if github_kind == "skill_directory":
+        return 0
+    if role == "listing":
+        return 10
+    if role == "source_page":
+        return 11
+    if role == "bundle_listing":
+        return 12
+    if role in _SKILL_BROWSE_ROLES:
+        return 20
+    if github_kind == "repository" or role == "repository":
+        return 30
+    return 90
+
+
+def _native_rank(proof: object) -> int:
+    value = _value(proof, "native_rank")
+    return value if type(value) is int and value >= 0 else 1_000_000
+
+
 def _proof_for(item: object, roles: set[str], *, accepted: set[str] = _ELIGIBLE) -> object | None:
-    candidates = []
-    for proof in _proofs(item):
+    candidates: list[tuple[int, int, int, object]] = []
+    for index, proof in enumerate(_proofs(item)):
         role = str(_value(proof, "role", "")).lower()
-        if role in roles and _proof_url(proof, accepted=accepted):
-            candidates.append(proof)
-    candidates.sort(key=lambda proof: (int(_value(proof, "native_rank", 1_000_000) or 1_000_000),
-                                        str(_proof_url(proof, accepted=accepted) or "")))
-    return candidates[0] if candidates else None
+        url = _proof_url(proof, accepted=accepted)
+        if role in roles and url:
+            candidates.append((_proof_semantic_priority(proof, url), _native_rank(proof), index, proof))
+    candidates.sort(key=lambda candidate: candidate[:3])
+    return candidates[0][3] if candidates else None
 
 
 def _is_schema2(report: object) -> bool:
@@ -379,7 +443,11 @@ def _number(result: object, fallback: int) -> int:
 
 
 def _primary_skill_link(result: object) -> str:
-    proof = _proof_for(result, {"skill", "skill_destination", "listing", "bundle_listing"}, accepted=_ELIGIBLE)
+    proof = _proof_for(
+        result,
+        _SKILL_BROWSE_ROLES | _LISTING_ROLES | {"repository"},
+        accepted=_ELIGIBLE,
+    )
     url = _proof_url(proof, accepted=_ELIGIBLE) if proof else None
     name = _text(_value(result, "name", "unnamed skill"), 160)
     if proof is not None and str(_value(proof, "role", "")).lower() == "bundle_listing":
@@ -407,6 +475,80 @@ def _is_continuation_page(report: object) -> bool:
             or str(_value(report, "mode", "online")) == "continuation")
 
 
+def _navigation_items(result: object) -> list[object]:
+    return [*_proofs(result), *_items(_value(result, "location", _value(result, "location_links", [])))]
+
+
+def _github_tree_identity(url: str | None) -> tuple[str, str, str] | None:
+    if _github_navigation_kind(url) != "skill_directory" or not url:
+        return None
+    parts = [unquote(part) for part in urlparse(url).path.strip("/").split("/")]
+    repository = parse_github_repository(url)
+    if not repository:
+        return None
+    path = "/".join(parts[4:]) or "."
+    return repository, parts[3], path
+
+
+def _checked_github_tree_url_for(
+    result: object,
+    repository: object,
+    path: object,
+    ref: object,
+    *,
+    accepted: set[str] = _CHECKED,
+) -> str | None:
+    safe_path = safe_skill_path(path)
+    expected_repository = parse_github_repository(repository) if isinstance(repository, str) else None
+    if not expected_repository or not safe_path or not isinstance(ref, str) or not ref:
+        return None
+    candidates: list[tuple[int, int, str]] = []
+    for index, item in enumerate(_navigation_items(result)):
+        if str(_value(item, "role", "")).lower() not in _SKILL_BROWSE_ROLES:
+            continue
+        url = _proof_url(item, accepted=accepted)
+        if _github_tree_identity(url) == (expected_repository, ref, safe_path):
+            candidates.append((_native_rank(item), index, str(url)))
+    candidates.sort(key=lambda candidate: candidate[:2])
+    return candidates[0][2] if candidates else None
+
+
+def _checked_github_tree_url(result: object) -> str | None:
+    repository = _value(result, "repository")
+    path = _value(result, "skill_path")
+    ref = _value(result, "ref")
+    resolved_target = _resolved_target(_value(result, "target_proof"))
+    if resolved_target is not None and (repository, path, ref) != resolved_target[:3]:
+        return None
+    return _checked_github_tree_url_for(result, repository, path, ref)
+
+
+def _checked_resolved_github_tree_url(result: object, *, accepted: set[str] = _CHECKED) -> str | None:
+    target = _resolved_target(_value(result, "target_proof"))
+    if target is None:
+        return None
+    repository, path, ref, _name = target
+    return _checked_github_tree_url_for(result, repository, path, ref, accepted=accepted)
+
+
+def _checked_github_repository_url(result: object) -> str | None:
+    repository = _value(result, "repository")
+    expected = parse_github_repository(repository) if isinstance(repository, str) else None
+    if not expected:
+        return None
+    candidates: list[tuple[int, int]] = []
+    for index, item in enumerate(_navigation_items(result)):
+        if str(_value(item, "role", "")).lower() != "repository":
+            continue
+        url = _proof_url(item, accepted=_CHECKED)
+        if (_github_navigation_kind(url) == "repository"
+                and isinstance(url, str) and parse_github_repository(url) == expected):
+            candidates.append((_native_rank(item), index))
+    if not candidates:
+        return None
+    return f"https://github.com/{expected}"
+
+
 def _location(result: object) -> str:
     entries = _items(_value(result, "location", _value(result, "location_links", [])))
     rendered: list[str] = []
@@ -418,7 +560,7 @@ def _location(result: object) -> str:
         return " / ".join(rendered)
     repository = _value(result, "repository")
     path = _value(result, "skill_path")
-    proof = _proof_for(result, {"skill", "skill_destination", "repository"}, accepted=_CHECKED)
+    proof = _proof_for(result, _SKILL_BROWSE_ROLES | {"repository"}, accepted=_CHECKED)
     proof_url = _proof_url(proof, accepted=_CHECKED) if proof else None
     role = str(_value(proof, "role", "")).lower() if proof else ""
     resolved_target = _resolved_target(_value(result, "target_proof"))
@@ -426,7 +568,7 @@ def _location(result: object) -> str:
     parts = [(_link(repository, proof_url) if repository and proof_url and role == "repository" else cell(repository, 200))] if repository else []
     if path:
         path_is_resolved = resolved_path is None or path == resolved_path
-        parts.append(_link(path, proof_url) if proof_url and path_is_resolved and role in {"skill", "skill_destination"} else cell(path, 200))
+        parts.append(_link(path, proof_url) if proof_url and path_is_resolved and role in _SKILL_BROWSE_ROLES else cell(path, 200))
     return " / ".join(parts) if parts else "Location unavailable"
 
 
@@ -466,30 +608,13 @@ def _compact_location(result: object) -> str:
         if path and path != ".":
             location += " › " + cell(path, 400)
         return "**Location:** " + location
-    entries = _items(_value(result, "location", _value(result, "location_links", [])))
-    if entries:
-        locations = []
-        for entry in entries:
-            label = _value(entry, "label", _value(entry, "path", "location"))
-            url = _proof_url(entry, accepted=_CHECKED)
-            reason = _value(entry, "reason", _status(entry) or "not verified")
-            locations.append(_link(str(label), url) if url else f"{cell(label, 400)} ({_text(reason, 160)})")
-        return "**Location:** " + " › ".join(locations) + _branch_suffix(ref)
-
-    proof = _proof_for(result, {"skill", "skill_destination", "repository"}, accepted=_CHECKED)
-    url = _proof_url(proof, accepted=_CHECKED) if proof else None
-    role = str(_value(proof, "role", "")).lower() if proof else ""
-    resolved_target = _resolved_target(_value(result, "target_proof"))
-    identity_matches = resolved_target is None or (
-        _value(result, "repository"), path, ref) == (resolved_target[0], resolved_target[1], resolved_target[2])
-
+    tree_url = _checked_github_tree_url(result)
+    repository_url = _checked_github_repository_url(result)
     parts: list[str] = []
     if repository:
-        repository_url = url if role == "repository" and parse_github_repository(url) == parse_github_repository(repository) else None
         parts.append(_link(str(repository), repository_url) if repository_url else cell(repository, 400))
     if path and path != ".":
-        path_url = url if url and identity_matches and role in {"skill", "skill_destination"} else None
-        parts.append(_link(str(path), path_url) if path_url else cell(path, 400))
+        parts.append(_link(str(path), tree_url) if tree_url else cell(path, 400))
     if parts:
         location = " › ".join(parts)
         if repository and not path:
@@ -498,14 +623,26 @@ def _compact_location(result: object) -> str:
             location += " (repository unavailable)"
         return "**Location:** " + location + _branch_suffix(ref)
 
+    entries = _items(_value(result, "location", _value(result, "location_links", [])))
+    if entries:
+        locations = []
+        for entry in entries:
+            label = _value(entry, "label", _value(entry, "path", "location"))
+            url = _proof_url(entry, accepted=_CHECKED)
+            reason = _value(entry, "reason", "not available for browsing" if _status(entry) in _CHECKED else _status(entry) or "not verified")
+            locations.append(_link(str(label), url) if url else f"{cell(label, 400)} ({_text(reason, 160)})")
+        return "**Location:** " + " › ".join(locations) + _branch_suffix(ref)
+
     inspection = _proof_for(
         result,
-        {"skill", "skill_destination", "listing", "bundle_listing", "repository", "source_page"},
+        _SKILL_BROWSE_ROLES | _LISTING_ROLES | {"repository"},
         accepted=_CHECKED,
     )
     inspection_url = _proof_url(inspection, accepted=_CHECKED) if inspection else None
     inspection_role = str(_value(inspection, "role", "")).lower() if inspection else ""
     labels = {
+        "skill_directory": "Checked skill directory",
+        "skill_browse": "Checked skill directory",
         "skill": "Checked skill destination",
         "skill_destination": "Checked skill destination",
         "listing": "Checked skill listing",
@@ -530,49 +667,77 @@ def _compact_resolved_target(result: object) -> str | None:
     resolved = {"repository": repository, "ref": ref, "skill_path": skill_path}
     if not any(key in reported and reported.get(key) != value for key, value in resolved.items()):
         return None
+    tree_url = _checked_resolved_github_tree_url(result)
     parts = [cell(repository, 400)]
     if skill_path != ".":
-        parts.append(cell(skill_path, 400))
+        parts.append(_link(skill_path, tree_url) if tree_url else cell(skill_path, 400))
+    elif tree_url:
+        parts[0] = _link(repository, tree_url)
     return "**Verified target:** " + " › ".join(parts) + _branch_suffix(ref)
 
 
-def _attributions(result: object) -> str:
-    explicit = _items(_value(result, "found_on", _value(result, "attributions", [])))
-    if not explicit:
-        explicit = _items(_value(result, "source_attributions", []))
-    by_source: dict[str, list[object]] = {}
+def _grouped_attributions(result: object) -> dict[str, list[object]]:
+    explicit = _attribution_proofs(result)
+    grouped: dict[str, list[object]] = {}
     for entry in explicit:
         source = str(_value(entry, "source_id", _value(entry, "id", "unknown")))
-        by_source.setdefault(source, []).append(entry)
+        grouped.setdefault(source, []).append(entry)
     # A failed or absent listing must not erase a source that contributed to a
-    # merged result.  It remains plain provenance, not a guessed destination.
+    # merged result. It remains plain provenance, not a guessed destination.
     for source in _items(_value(result, "source_ids", [])):
         source_id = str(source)
-        by_source.setdefault(source_id, [
+        grouped.setdefault(source_id, [
             {"source_id": source_id, "label": source_id, "role": "unavailable", "status": "not_checked",
              "reason": "listing not verified"}
         ])
+    return grouped
+
+
+def _checked_source_listing_url(source: str, entry: object) -> str | None:
+    role = str(_value(entry, "role", "")).lower()
+    if role not in _LISTING_ROLES:
+        return None
+    url = _proof_url(entry, accepted=_CHECKED)
+    if not url:
+        return None
+    hostname = (urlparse(url).hostname or "").casefold().rstrip(".")
+    # Tessl has historically supplied repository URLs for individual skills.
+    # That proves a repository source, not a Tessl listing, so enforce Tessl's
+    # native origin without suppressing legitimate GitHub source pages.
+    if source.casefold() == "tessl" and hostname not in {"tessl.io", "www.tessl.io"}:
+        return None
+    return url
+
+
+def _select_attribution(source: str, entries: list[object]) -> tuple[object, str | None]:
+    ordered = sorted(
+        enumerate(entries),
+        key=lambda pair: (
+            _ATTRIBUTION_ROLE_PRIORITY.get(str(_value(pair[1], "role", "")).lower(), 99),
+            _native_rank(pair[1]),
+            pair[0],
+        ),
+    )
+    for _index, entry in ordered:
+        url = _checked_source_listing_url(source, entry)
+        if url:
+            return entry, url
+    return (ordered[0][1], None) if ordered else ({"source_id": source}, None)
+
+
+def _attributions(result: object) -> str:
+    by_source = _grouped_attributions(result)
     if not by_source:
         return " · ".join(cell(value, 120) for value in sorted(set(_items(_value(result, "source_ids", []))))) or "Source unavailable"
     rendered: list[str] = []
     unverified_listing_labels: list[str] = []
     all_are_unverified_listings = True
     for source, entries in sorted(by_source.items()):
-        entries.sort(key=lambda entry: (_ROLE_PRIORITY.get(str(_value(entry, "role", "")).lower(), 99),
-                                        str(_value(entry, "url", ""))))
-        entry = entries[0]
+        entry, url = _select_attribution(source, entries)
         label = _text(_value(entry, "label", source), 120)
-        url = _proof_url(entry, accepted=_CHECKED)
         role = str(_value(entry, "role", "")).replace("_", " ")
         suffix = _value(entry, "suffix") or ("bundle listing" if role == "bundle listing" else None)
-        parsed = urlparse(url) if url else None
-        source_is_tessl = source.casefold() == "tessl"
-        # A Tessl occurrence can carry a checked GitHub repository proof.  That
-        # verifies a repository role, not a Tessl listing, so never turn the
-        # Tessl attribution itself into a misleading GitHub link.
-        eligible_source_role = role in {"listing", "bundle listing", "source page"}
-        tessl_origin = parsed is not None and parsed.hostname in {"tessl.io", "www.tessl.io"}
-        if url and eligible_source_role and (not source_is_tessl or tessl_origin):
+        if url:
             text = _link(label, url)
             if suffix:
                 text += f" ({_text(suffix, 120)})"
@@ -642,6 +807,8 @@ def _install_v2(result: object, assistant: str | None) -> tuple[str | None, str]
     if target is None:
         detail = _value(proof, "detail")
         return None, _text(detail or "exact skill target proof is missing", 180)
+    if not _checked_resolved_github_tree_url(result, accepted=_ELIGIBLE):
+        return None, "checked skill directory proof is missing"
     return _github_install_command(*target, assistant)
 
 
@@ -652,7 +819,7 @@ def _compact_actions(result: object, number: int, assistant: str | None) -> str:
         return f"Inspect and install: type **Inspect #{number}**  **Install #{number}**"
     inspection = _proof_for(
         result,
-        {"skill", "skill_destination", "listing", "bundle_listing", "repository", "source_page"},
+        _SKILL_BROWSE_ROLES | _LISTING_ROLES | {"repository"},
         accepted=_CHECKED,
     )
     inspection_url = _proof_url(inspection, accepted=_CHECKED) if inspection else None
@@ -1052,13 +1219,17 @@ def _html_document(title: object, body: str) -> str:
 
 
 def _html_link(label: object, url: str | None) -> str:
-    safe = safe_web_url(url)
+    safe = _navigation_url(url)
     text = _html_text(label, 400)
     return f'<a href="{html.escape(safe, quote=True)}">{text}</a>' if safe else text
 
 
 def _html_primary(result: object) -> str:
-    proof = _proof_for(result, {"skill", "skill_destination", "listing", "bundle_listing"}, accepted=_ELIGIBLE)
+    proof = _proof_for(
+        result,
+        _SKILL_BROWSE_ROLES | _LISTING_ROLES | {"repository"},
+        accepted=_ELIGIBLE,
+    )
     role = str(_value(proof, "role", "")).lower() if proof is not None else ""
     name = clean_text(_value(result, "name", "unnamed skill"), 160)
     if role == "bundle_listing":
@@ -1067,29 +1238,13 @@ def _html_primary(result: object) -> str:
 
 
 def _html_attributions(result: object) -> str:
-    explicit = _items(_value(result, "found_on", _value(result, "attributions", [])))
-    if not explicit:
-        explicit = _items(_value(result, "source_attributions", []))
-    grouped: dict[str, list[object]] = {}
-    for entry in explicit:
-        source = str(_value(entry, "source_id", _value(entry, "id", "unknown")))
-        grouped.setdefault(source, []).append(entry)
-    for source in _items(_value(result, "source_ids", [])):
-        source_id = str(source)
-        grouped.setdefault(source_id, [{"source_id": source_id, "label": source_id,
-                                        "role": "unavailable", "status": "not_checked",
-                                        "reason": "listing not verified"}])
+    grouped = _grouped_attributions(result)
     rendered: list[str] = []
     for source, entries in sorted(grouped.items()):
-        entries.sort(key=lambda entry: (_ROLE_PRIORITY.get(str(_value(entry, "role", "")).lower(), 99),
-                                        str(_value(entry, "url", ""))))
-        entry = entries[0]
+        entry, url = _select_attribution(source, entries)
         label = _value(entry, "label", source)
         role = str(_value(entry, "role", "")).replace("_", " ")
-        url = _proof_url(entry, accepted=_CHECKED)
-        parsed = urlparse(url) if url else None
-        tessl_ok = source.casefold() != "tessl" or (parsed is not None and parsed.hostname in {"tessl.io", "www.tessl.io"})
-        if url and role in {"listing", "bundle listing", "source page"} and tessl_ok:
+        if url:
             value = _html_link(label, url)
             suffix = _value(entry, "suffix") or ("bundle listing" if role == "bundle listing" else None)
             if suffix:
@@ -1108,28 +1263,27 @@ def _html_metrics(result: object) -> str:
 
 def _html_location(result: object) -> str:
     repository, path, ref = (_value(result, "repository"), _value(result, "skill_path"), _value(result, "ref"))
-    entries = _items(_value(result, "location", _value(result, "location_links", [])))
-    if entries:
-        rendered = []
-        for entry in entries:
-            label = _value(entry, "label", _value(entry, "path", "location"))
-            url = _proof_url(entry, accepted=_CHECKED)
-            if url:
-                rendered.append(_html_link(label, url))
-            else:
-                reason = _value(entry, "reason", _status(entry) or "not verified")
-                rendered.append(_html_text(label, 400) + " (" + _html_text(reason, 160) + ")")
-        value = " / ".join(rendered)
-        return value + (" @ " + _html_text(ref, 400) if ref else "")
-    proof = _proof_for(result, {"skill", "skill_destination", "repository"}, accepted=_CHECKED)
-    url = _proof_url(proof, accepted=_CHECKED) if proof else None
-    role = str(_value(proof, "role", "")).lower() if proof else ""
+    tree_url = _checked_github_tree_url(result)
+    repository_url = _checked_github_repository_url(result)
     parts = []
     if repository:
-        parts.append(_html_link(repository, url if role == "repository" else None))
-    if path:
-        parts.append(_html_link(path, url if role in {"skill", "skill_destination"} else None))
-    value = " / ".join(parts) if parts else "Location unavailable"
+        parts.append(_html_link(repository, repository_url))
+    if path and path != ".":
+        parts.append(_html_link(path, tree_url))
+    if parts:
+        value = " / ".join(parts)
+        return value + (" @ " + _html_text(ref, 400) if ref else "")
+    entries = _items(_value(result, "location", _value(result, "location_links", [])))
+    rendered = []
+    for entry in entries:
+        label = _value(entry, "label", _value(entry, "path", "location"))
+        url = _proof_url(entry, accepted=_CHECKED)
+        if url:
+            rendered.append(_html_link(label, url))
+        else:
+            reason = _value(entry, "reason", "not available for browsing" if _status(entry) in _CHECKED else _status(entry) or "not verified")
+            rendered.append(_html_text(label, 400) + " (" + _html_text(reason, 160) + ")")
+    value = " / ".join(rendered) if rendered else "Location unavailable"
     return value + (" @ " + _html_text(ref, 400) if ref else "")
 
 
@@ -1142,7 +1296,11 @@ def _html_exact_target(result: object) -> str:
     if target is None:
         return "Exact target not verified."
     repository, path, ref, name = target
-    return " / ".join(_html_text(value, 400) for value in (repository, path)) + " @ " + _html_text(ref, 400) + " · " + _html_text(name, 160)
+    tree_url = _checked_resolved_github_tree_url(result)
+    repository_value = _html_link(repository, tree_url) if path == "." else _html_text(repository, 400)
+    path_value = _html_link(path, tree_url) if path != "." else None
+    location = " / ".join(value for value in (repository_value, path_value) if value)
+    return location + " @ " + _html_text(ref, 400) + " · " + _html_text(name, 160)
 
 
 def _html_install(result: object, assistant: str | None) -> str:
@@ -1151,7 +1309,7 @@ def _html_install(result: object, assistant: str | None) -> str:
     if command:
         value = f"<p><strong>Install ({_html_text(host, 80)}, current project)</strong></p><pre><code>{html.escape(command, quote=True)}</code></pre>"
     else:
-        proof = _proof_for(result, {"skill", "skill_destination", "listing", "bundle_listing", "repository", "source_page"}, accepted=_CHECKED)
+        proof = _proof_for(result, _SKILL_BROWSE_ROLES | _LISTING_ROLES | {"repository"}, accepted=_CHECKED)
         url = _proof_url(proof, accepted=_CHECKED) if proof else None
         inspection = " " + _html_link("Inspect checked destination", url) if url else " Inspect an available source before installing."
         value = f"<p><strong>Install ({_html_text(host, 80)}, current project):</strong> Not ready: {_html_text(reason, 180)}.{inspection}</p>"

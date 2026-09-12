@@ -26,7 +26,13 @@ class ProductPathTests(unittest.TestCase):
         self.addCleanup(temporary.cleanup)
         self.root = Path(temporary.name).resolve()
         self.home = self.root / "home"
-        environment = patch.dict(os.environ, {"HOME": str(self.home)}, clear=True)
+        # ``WindowsPath.expanduser`` uses USERPROFILE, while POSIX uses HOME.
+        # Keep both synthetic so the fixture never consults the real profile.
+        environment = patch.dict(
+            os.environ,
+            {"HOME": str(self.home), "USERPROFILE": str(self.home)},
+            clear=True,
+        )
         environment.start()
         self.addCleanup(environment.stop)
         home_patch = patch.object(Path, "home", return_value=self.home)
