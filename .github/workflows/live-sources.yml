@@ -4,8 +4,10 @@ on:
   workflow_dispatch:
   push:
     paths:
+      - '.github/workflows/live-sources.yml'
       - 'skills/find/scripts/universal_skill_finder/**'
       - 'tests/fixtures/sources/**'
+      - 'tests/live/source_checks.py'
       - 'tests/source_test_manifest.json'
       - 'scripts/test_sources.py'
       - 'scripts/source_test_selection.py'
