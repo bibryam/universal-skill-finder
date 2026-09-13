@@ -52,6 +52,8 @@ Choose the standalone skill or the native plugin to avoid duplicate entries.
 ```bash
 claude plugin marketplace add bibryam/universal-skill-finder
 claude plugin install skill@skill
+
+❯ /skill:find video editor
 ```
 
 **Codex**
@@ -59,6 +61,8 @@ claude plugin install skill@skill
 ```bash
 codex plugin marketplace add https://github.com/bibryam/universal-skill-finder.git
 codex plugin add skill@skill
+
+❯ $skill:find video editor
 ```
 
 **Install from GitHub**
