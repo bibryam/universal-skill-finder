@@ -9,7 +9,7 @@ import queue
 import threading
 import time
 from concurrent.futures import Future, ThreadPoolExecutor, TimeoutError
-from dataclasses import asdict
+from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
 from pathlib import Path
@@ -44,6 +44,14 @@ TRUST_PRIORITY = {
 }
 
 _REMOTE_ACTIONABLE_PROOF_STATUSES = frozenset({"eligible", "verified", "reachable"})
+
+
+@dataclass(frozen=True)
+class _ValidationRun:
+    checked_count: int = 0
+    deferred_count: int = 0
+    stop_reason: str | None = None
+    stopped_reason: str | None = None
 
 
 def _is_remote_actionable_proof_status(value: object) -> bool:
@@ -1260,11 +1268,17 @@ class UniversalSkillFinder:
         emit_progress(progress_callback, ProgressEvent(
             "validation_started", query=query, completed=0, total=len(ranked_pool), status="not_checked",
         ))
+        validation_run = _ValidationRun()
         if not offline and not dry_run:
-            self._validate_ranked_pool(
+            validation_outcome = self._validate_ranked_pool(
                 ranked_pool, deadline, policy, budget=validation_budget, permits=validation_permits,
                 validation_deadline=final_validation_deadline,
                 requested_size=display_cap,
+            )
+            validation_run = validation_outcome if isinstance(validation_outcome, _ValidationRun) else _ValidationRun(
+                deferred_count=len(ranked_pool),
+                stop_reason="validation_state_unavailable",
+                stopped_reason="destination-verification completion state is unavailable",
             )
         partitions: dict[str, list[Result]] = {
             "eligible": [], "unavailable": [], "inconclusive": [], "not_checked": [],
@@ -1325,6 +1339,14 @@ class UniversalSkillFinder:
             unavailable_count=len(partitions["unavailable"]),
             inconclusive_count=len(partitions["inconclusive"]),
             not_checked_count=len(partitions["not_checked"]),
+            validation_checked_count=validation_run.checked_count,
+            validation_deferred_count=validation_run.deferred_count,
+            validation_stop_reason=validation_run.stop_reason,
+            validation_stopped_reason=validation_run.stopped_reason,
+            page_incomplete=(
+                0 < len(results) < display_cap
+                and validation_run.stopped_reason is not None
+            ),
             page_start=1 if results else 0,
             page_shown=len(results),
             materialized_total=len(results),
@@ -1477,9 +1499,14 @@ class UniversalSkillFinder:
         budget: RequestBudget | None = None, permits: PermitPool | None = None,
         validation_deadline: Deadline | None = None,
         requested_size: int = 10,
-    ) -> None:
+    ) -> _ValidationRun:
         if self.validation_transport is None:
-            return
+            count = len(results)
+            return _ValidationRun(
+                deferred_count=count,
+                stop_reason="validation_unavailable" if count else "pool_exhausted",
+                stopped_reason="destination verification is unavailable" if count else None,
+            )
         destinations, _expected_by_id = self._validation_destinations(results)
         validation_deadline = validation_deadline or Deadline(
             deadline.started_at, deadline.collection_cutoff_at,
@@ -1497,8 +1524,19 @@ class UniversalSkillFinder:
         target_cache = TargetResolutionCache()
         checked_results = results[:MAX_PAGE_SCAN]
         offset = 0
+
+        def validation_budget_exhausted() -> bool:
+            state = budget.snapshot().get("validation", {})
+            return (
+                type(state.get("used")) is int
+                and type(state.get("limit")) is int
+                and state["used"] >= state["limit"]
+            )
+
         while offset < len(checked_results):
             if validation_deadline.remaining() <= 0:
+                break
+            if validation_budget_exhausted():
                 break
             eligible = sum(
                 self._validation_status(item) == "eligible"
@@ -1579,6 +1617,70 @@ class UniversalSkillFinder:
                         attribution["native_rank"] = native_rank
                     if not any(existing == attribution for existing in result.attributions):
                         result.attributions.append(attribution)
+
+        completed_count = len(deltas)
+        eligible_count = sum(self._validation_status(item) == "eligible" for item in results)
+
+        def stopped_by(delta: dict[str, Any], marker: str) -> bool:
+            details = [delta.get("detail")]
+            target = delta.get("target_proof")
+            if isinstance(target, dict):
+                details.append(target.get("detail"))
+            proofs = delta.get("link_proofs")
+            if isinstance(proofs, list):
+                details.extend(proof.get("detail") for proof in proofs if isinstance(proof, dict))
+            return any(
+                isinstance(detail, str) and marker in detail.casefold()
+                for detail in details
+            )
+
+        budget_blocked = sum(
+            delta.get("status") == "not_checked" and stopped_by(delta, "budget")
+            for delta in deltas.values()
+        )
+        deadline_blocked = sum(
+            delta.get("status") == "not_checked" and stopped_by(delta, "deadline")
+            for delta in deltas.values()
+        )
+        stop_reason: str | None = None
+        stopped_reason: str | None = None
+        checked_count = completed_count
+        deferred_count = 0
+        if eligible_count < requested_size:
+            if budget_blocked or (validation_budget_exhausted() and completed_count < len(results)):
+                stop_reason = "request_budget_reached"
+                checked_count -= budget_blocked
+                deferred_count = len(results) - completed_count + budget_blocked
+                stopped_reason = (
+                    "destination-verification request budget reached after final validation "
+                    f"completed for {checked_count} of {len(results)} candidates"
+                )
+            elif deadline_blocked or (
+                validation_deadline.remaining() <= 0 and completed_count < len(results)
+            ):
+                stop_reason = "deadline_reached"
+                checked_count -= deadline_blocked
+                deferred_count = len(results) - completed_count + deadline_blocked
+                seconds = f"{policy.validation_seconds:g}"
+                stopped_reason = (
+                    f"{seconds}-second destination-verification deadline reached after final validation "
+                    f"completed for {checked_count} of {len(results)} candidates"
+                )
+            elif len(results) > len(checked_results):
+                stop_reason = "scan_limit_reached"
+                deferred_count = len(results) - completed_count
+                stopped_reason = (
+                    f"{MAX_PAGE_SCAN}-candidate destination-verification scan limit reached after final validation "
+                    f"completed for {checked_count} of {len(results)} candidates"
+                )
+        if stop_reason is None:
+            stop_reason = "page_full" if eligible_count >= requested_size else "pool_exhausted"
+        return _ValidationRun(
+            checked_count=checked_count,
+            deferred_count=deferred_count,
+            stop_reason=stop_reason,
+            stopped_reason=stopped_reason,
+        )
 
     @staticmethod
     def _validation_status(result: Result) -> str:

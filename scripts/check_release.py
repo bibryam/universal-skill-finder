@@ -133,9 +133,9 @@ def main() -> int:
         check(handoff.get("kind") == "local" and Path(handoff["path"]).resolve() == fixture.resolve(), "local handoff lost identity")
         check(handoff.get("requires_approval") is True, "handoff lacks approval boundary")
         markdown = run("pdf forms", "--source", "fixture", "--markdown", "--assistant", "codex", "--no-installed-check")
-        check("### 1." in markdown and "| Source | Search status | Candidates returned | Shown | Enabled |" in markdown,
+        check("### 1." in markdown and "| Source | Search status | Candidates in pool | Globally shown | Enabled |" in markdown,
               "verified cards or coverage table missing")
-        check(markdown.index("### 1.") < markdown.index("| Source | Search status | Candidates returned | Shown | Enabled |"),
+        check(markdown.index("### 1.") < markdown.index("| Source | Search status | Candidates in pool | Globally shown | Enabled |"),
               "verified cards must precede full coverage")
         check("Searched" in markdown and "Not searched" in markdown, "source status indicators missing")
         check("### 1. portable-pdf" in markdown and "Location:" in markdown,

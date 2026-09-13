@@ -36,15 +36,20 @@ from .presentation import (
     render_preview, render_progress, render_report,
 )
 from .snapshot import (
-    Page, SnapshotError, create_snapshot, extend_snapshot, load_snapshot, materialize_page, next_safe_cursor, resolve_materialized_result,
-    save_exclusive_path, seed_initial_page, snapshot_dict, snapshot_writer_lock, update_snapshot, validate_frozen_result_record,
+    MAX_PAGE_SCAN, Page, SnapshotError, create_snapshot, decode_cursor, extend_snapshot,
+    load_snapshot, materialize_page, next_safe_cursor, resolve_materialized_result, save_exclusive_path,
+    seed_initial_page, snapshot_dict, snapshot_writer_lock, update_snapshot,
+    validate_frozen_result_record,
 )
 from .source_presentation import render_sources_markdown, source_rows
 from .text import clean_text, parse_github_repository, safe_web_url
 from .terminal import should_style, style_report
 from .runtime import Deadline, NetworkPolicy, PermitPool, RequestBudget, emit_progress
 from .validation import AnonymousPublicTransport, TargetResolutionCache, github_skill_destination, public_resolver, reviewed_destination
-from .versioning import SCHEMA_VERSION, effective_config_revision, release_metadata
+from .versioning import (
+    REPORT_FORMAT_VERSION, SCHEMA_VERSION, SEARCH_REPORT_SCHEMA_VERSION,
+    effective_config_revision, release_metadata,
+)
 
 SUCCESS_STATUSES = {"ok", "cached"}
 COMMANDS = {"search", "help", "page", "explain", "repositories", "sources", "packs", "doctor", "cache"}
@@ -474,6 +479,11 @@ def _persist_report_snapshot(report: SearchReport, path: Path, args: argparse.Na
             "mode": report.mode,
             "provenance": dict(report.provenance),
             "notes": list(report.notes),
+            "page_incomplete": report.page_incomplete,
+            "validation_checked_count": report.validation_checked_count,
+            "validation_deferred_count": report.validation_deferred_count,
+            "validation_stop_reason": report.validation_stop_reason,
+            "validation_stopped_reason": report.validation_stopped_reason,
         },
     )
     page = seed_initial_page(snapshot, initial_ids)
@@ -555,9 +565,70 @@ def _page(args: argparse.Namespace) -> int:
         record = dict(state["result_records"].get(identity, {}))
         record["result_number"] = page.snapshot.result_numbers.get(identity)
         results.append(record)
+    metadata = state.get("report_metadata", {})
     statuses = [proof.get("status") for proof in state["validation_ledger"].values() if isinstance(proof, dict)]
     numbers = [value for value in page.snapshot.result_numbers.values() if type(value) is int]
-    metadata = state.get("report_metadata", {})
+    current_numbers = [
+        result.get("result_number") for result in results
+        if type(result.get("result_number")) is int
+    ]
+    materialized_before = (
+        max(0, min(current_numbers) - 1)
+        if current_numbers else max(numbers, default=0)
+    )
+    page_target = min(
+        args.page_size or page.snapshot.page_size,
+        max(0, page.snapshot.requested_cap - materialized_before),
+    )
+    scan_limited = (
+        page.scanned_count >= MAX_PAGE_SCAN
+        and not page.is_exhausted
+        and len(results) < page_target
+    )
+    page_incomplete = bool(results) and len(results) < page_target and (page.has_pending or scan_limited)
+    validation_budget = budget.snapshot().get("validation", {})
+    validation_budget_reached = (
+        type(validation_budget.get("used")) is int
+        and type(validation_budget.get("limit")) is int
+        and validation_budget["used"] >= validation_budget["limit"]
+    )
+    if page.has_pending and validation_deadline.remaining() <= 0:
+        validation_stop_reason = "deadline_reached"
+        validation_stopped_reason = (
+            f"{policy.validation_seconds:g}-second destination-verification deadline reached after final validation "
+            f"completed for {page.scanned_count} candidates on this page"
+        )
+    elif page.has_pending and validation_budget_reached:
+        validation_stop_reason = "request_budget_reached"
+        validation_stopped_reason = (
+            "destination-verification request budget reached after final validation "
+            f"completed for {page.scanned_count} candidates on this page"
+        )
+    elif page.has_pending:
+        validation_stop_reason = "validation_deferred"
+        validation_stopped_reason = page.pending_detail or "destination verification stopped before dispatch"
+    elif scan_limited:
+        validation_stop_reason = "scan_limit_reached"
+        validation_stopped_reason = f"{MAX_PAGE_SCAN}-candidate destination-verification scan limit reached"
+    elif page.is_exhausted:
+        validation_stop_reason = "pool_exhausted"
+        validation_stopped_reason = None
+    else:
+        validation_stop_reason = "page_full"
+        validation_stopped_reason = None
+    validation_deferred_count = 0
+    if page_incomplete:
+        original_deferred = metadata.get("validation_deferred_count")
+        if materialized_before == 0 and metadata.get("page_incomplete") is True \
+                and type(original_deferred) is int and original_deferred >= 0:
+            validation_deferred_count = original_deferred
+        elif page.resume_cursor is not None:
+            resume_position, _materialized = decode_cursor(page.resume_cursor, page.snapshot)
+            validation_deferred_count = max(0, len(page.snapshot.ordered_pool) - resume_position)
+        else:
+            validation_deferred_count = max(
+                0, len(page.snapshot.ordered_pool) - len(page.snapshot.validation_ledger),
+            )
     coverage = metadata.get("coverage", [])
     if not isinstance(coverage, list):
         coverage = []
@@ -568,8 +639,8 @@ def _page(args: argparse.Namespace) -> int:
     if type(accepted) is not int or accepted < len(page.snapshot.ordered_pool):
         accepted = sum(max(1, len(record.get("occurrences", []))) for record in records.values())
     report = {
-        "schema_version": 2,
-        "report_format_version": 2,
+        "schema_version": SEARCH_REPORT_SCHEMA_VERSION,
+        "report_format_version": REPORT_FORMAT_VERSION,
         "mode": "online",
         "continuation_page": True,
         "coverage_context": "saved" if coverage else "unavailable",
@@ -595,7 +666,11 @@ def _page(args: argparse.Namespace) -> int:
                   if isinstance(note, str)] if isinstance(metadata.get("notes", []), list) else [],
         "timings": {"page_ms": int((time.monotonic() - started_at) * 1000),
                     "request_budget": budget.snapshot()},
-        "validation_stopped_reason": page.pending_detail,
+        "validation_stopped_reason": validation_stopped_reason,
+        "validation_stop_reason": validation_stop_reason,
+        "validation_checked_count": page.scanned_count,
+        "validation_deferred_count": validation_deferred_count,
+        "page_incomplete": page_incomplete,
         "pool_exhausted": page.is_exhausted,
         "has_pending": page.has_pending,
         "continuation": {"available": page.next_cursor is not None, "cursor": page.next_cursor},

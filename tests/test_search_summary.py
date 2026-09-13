@@ -78,7 +78,7 @@ class SearchSummaryTests(unittest.TestCase):
         self.assertIn("- Candidates: 81 accepted · 75 unique skills · 6 duplicate entries merged.", notes)
         self.assertIn("- Destination checks: 10 with verified destinations (not necessarily install-ready) · 2 unavailable · 63 inconclusive · 0 not checked.", notes)
         self.assertIn("- Page: 1–10 · 10 on this page · 10 materialized so far.", notes)
-        self.assertIn("- Requested up to 10 results · Page size 10.", notes)
+        self.assertIn("- Requested up to 10 results · Page size: up to 10 verified results.", notes)
         self.assertIn("- Sources: 5 searched · 4 cached · 0 failed · 0 not searched.", notes)
 
     def test_partial_suffix_exposes_failed_or_unverified_work_without_inflating_source_total(self):
@@ -103,6 +103,72 @@ class SearchSummaryTests(unittest.TestCase):
         text = render_report(found)
 
         self.assertIn("**partial**", text.split("## Notes", 1)[0])
+
+    def test_deadline_underfill_is_explicit_in_every_human_format(self):
+        found = report()
+        found.unique_count = 52
+        found.page_shown = 6
+        found.materialized_total = 6
+        found.eligible_count = 6
+        found.unavailable_count = 0
+        found.inconclusive_count = 2
+        found.not_checked_count = 44
+        found.page_incomplete = True
+        found.validation_checked_count = 8
+        found.validation_deferred_count = 44
+        found.validation_stop_reason = "deadline_reached"
+        found.validation_stopped_reason = (
+            "8-second destination-verification deadline reached after final validation "
+            "completed for 8 of 52 candidates"
+        )
+
+        for format in ("markdown", "plain", "html"):
+            with self.subTest(format=format):
+                text = render_report(found, format=format)
+                self.assertIn("incomplete page", text)
+                self.assertIn(found.validation_stopped_reason, text)
+                self.assertIn("44 candidates were deferred", text)
+
+    def test_small_exhausted_pool_does_not_claim_an_incomplete_page(self):
+        found = report()
+        found.unique_count = 6
+        found.page_shown = 6
+        found.materialized_total = 6
+        found.eligible_count = 6
+        found.unavailable_count = found.inconclusive_count = found.not_checked_count = 0
+        found.page_incomplete = False
+        found.validation_stop_reason = "pool_exhausted"
+
+        self.assertNotIn("incomplete page", render_report(found))
+
+    def test_completed_not_checked_work_is_separate_from_deferred_work(self):
+        found = report()
+        found.unique_count = 53
+        found.page_shown = 6
+        found.materialized_total = 6
+        found.eligible_count = 6
+        found.inconclusive_count = 2
+        found.not_checked_count = 45
+        found.page_incomplete = True
+        found.validation_deferred_count = 43
+        found.validation_stopped_reason = "destination-verification deadline reached"
+
+        text = render_report(found)
+        self.assertIn("43 candidates were deferred", text)
+        self.assertIn("Completed without a checked destination: 2 candidates", text)
+
+    def test_coverage_columns_distinguish_pool_depth_from_global_display(self):
+        found = report()
+        found.coverage = [SimpleNamespace(
+            source_id="skills-sh", status="ok", result_count=10, shown=1,
+            requested_limit=10, source_total=None,
+        )]
+        for format in ("markdown", "plain", "html"):
+            with self.subTest(format=format):
+                text = render_report(found, format=format)
+                self.assertIn("Candidates in pool", text)
+                self.assertIn("Globally shown", text)
+                self.assertIn("not the source's total matches", text)
 
     def test_header_counts_searched_and_complete_aliases_as_completed_sources(self):
         found = report()

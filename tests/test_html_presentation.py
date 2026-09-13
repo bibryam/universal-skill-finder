@@ -70,7 +70,8 @@ class HtmlPresentationTests(unittest.TestCase):
         closed_header = text.split('<article class="card">', 1)[1].split("<details>", 1)[0]
         self.assertIn("skillsmp: stars: 30,563", closed_header)
         self.assertNotIn(f">{row.skill_path}<", closed_header)
-        self.assertIn("Requested up to 3 results · Page size 2", text)
+        self.assertIn("Requested up to 3 results · Page size: up to 2 verified results", text)
+        self.assertIn("<th>Candidates in pool</th><th>Globally shown</th>", text)
         self.assertIn("with verified destinations (not necessarily install-ready)", text)
 
     def test_html_escapes_remote_content_and_does_not_turn_unchecked_targets_into_links_or_commands(self):

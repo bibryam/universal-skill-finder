@@ -6,6 +6,7 @@ import time
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from unittest.mock import patch
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -55,6 +56,11 @@ class _Transport:
     def request(self, _method, url, **_kwargs):
         self.calls.append(url)
         return self.responses.pop(0)
+
+
+class _UnusedTransport:
+    def request(self, *_args, **_kwargs):
+        raise AssertionError("expired validation must not make a request")
 
 
 class _PayloadHttp:
@@ -165,6 +171,97 @@ def _proof(destination, body: str, *, content_type: str = "text/html"):
 
 
 class ProviderLinkContractTests(unittest.TestCase):
+    def test_expired_first_page_validation_reports_the_deferred_tail(self) -> None:
+        candidates = [
+            Candidate(
+                f"video-{index}", f"Video editor {index}", "Edit video", "fixture", "registry", "skills-sh",
+                native_rank=index + 1,
+            )
+            for index in range(52)
+        ]
+        with TemporaryDirectory() as temporary:
+            config = EffectiveConfig(
+                settings={}, packs=[],
+                sources=[{"id": "fixture", "adapter": "skills-sh", "kind": "registry"}],
+                overlay_path=Path(temporary) / "sources.json", overlay={},
+            )
+            finder = UniversalSkillFinder(
+                config, cache=Cache(Path(temporary) / "cache"),
+                validation_transport=_UnusedTransport(), validation_resolver=lambda *_args: ("8.8.8.8",),
+            )
+            results = finder._merge(candidates, "video editor")
+            now = time.monotonic()
+            expired = Deadline(now - 9, now - 8, now - 1, 8.0)
+            run = finder._validate_ranked_pool(
+                results, expired, NetworkPolicy.for_mode(), validation_deadline=expired,
+            )
+
+        self.assertEqual(run.stop_reason, "deadline_reached")
+        self.assertEqual((run.checked_count, run.deferred_count), (0, 52))
+        self.assertEqual(
+            run.stopped_reason,
+            "8-second destination-verification deadline reached after final validation completed for 0 of 52 candidates",
+        )
+
+    def test_exhausted_request_budget_stops_before_burning_the_ranked_pool(self) -> None:
+        candidates = [
+            Candidate(
+                f"video-{index}", f"Video editor {index}", "Edit video", "fixture", "registry", "skills-sh",
+                native_rank=index + 1,
+            )
+            for index in range(5)
+        ]
+        with TemporaryDirectory() as temporary:
+            config = EffectiveConfig(
+                settings={}, packs=[],
+                sources=[{"id": "fixture", "adapter": "skills-sh", "kind": "registry"}],
+                overlay_path=Path(temporary) / "sources.json", overlay={},
+            )
+            finder = UniversalSkillFinder(
+                config, cache=Cache(Path(temporary) / "cache"),
+                validation_transport=_UnusedTransport(), validation_resolver=lambda *_args: ("8.8.8.8",),
+            )
+            results = finder._merge(candidates, "video editor")
+            policy = NetworkPolicy(1.0, 2.0, 1.0, validation_requests=0)
+            run = finder._validate_ranked_pool(results, Deadline.start(policy), policy)
+
+        self.assertEqual(run.stop_reason, "request_budget_reached")
+        self.assertEqual((run.checked_count, run.deferred_count), (0, 5))
+        self.assertIn("0 of 5", run.stopped_reason)
+
+    def test_eligible_identity_is_not_deferred_by_a_later_bounded_proof(self) -> None:
+        candidate = Candidate(
+            "video", "Video editor", "Edit video", "fixture", "registry", "skills-sh",
+        )
+        with TemporaryDirectory() as temporary:
+            config = EffectiveConfig(
+                settings={}, packs=[],
+                sources=[{"id": "fixture", "adapter": "skills-sh", "kind": "registry"}],
+                overlay_path=Path(temporary) / "sources.json", overlay={},
+            )
+            finder = UniversalSkillFinder(
+                config, cache=Cache(Path(temporary) / "cache"),
+                validation_transport=_UnusedTransport(), validation_resolver=lambda *_args: ("8.8.8.8",),
+            )
+            results = finder._merge([candidate], "video editor")
+            outcome = {
+                "status": "eligible",
+                "link_proofs": [
+                    {"role": "listing", "url": "https://skills.sh/example/video", "status": "eligible"},
+                    {"role": "source_page", "url": "https://skills.sh/example", "status": "not_checked",
+                     "detail": "validation deadline exhausted"},
+                ],
+            }
+            with patch("universal_skill_finder.federation.validate_record", return_value=outcome):
+                run = finder._validate_ranked_pool(
+                    results, Deadline.start(NetworkPolicy.for_mode()), NetworkPolicy.for_mode(),
+                    requested_size=2,
+                )
+
+        self.assertEqual(run.stop_reason, "pool_exhausted")
+        self.assertEqual((run.checked_count, run.deferred_count), (1, 0))
+        self.assertIsNone(run.stopped_reason)
+
     def test_archive_content_proof_never_authorizes_github_web_link(self) -> None:
         source = {"id": "repo", "kind": "repository", "adapter": "github-repo", "repository": "owner/repo", "ref": "main"}
         candidate = _repo_candidate(source, "skills/example/SKILL.md", "---\nname: Example\n---\nUseful.", "a" * 64)

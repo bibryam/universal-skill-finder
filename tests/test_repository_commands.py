@@ -178,7 +178,7 @@ class SourceTerminologyTests(unittest.TestCase):
                 with redirect_stdout(output):
                     _print_report(found, dry_run=dry_run)
                 if found.coverage:
-                    self.assertIn("| Source | Search status | Candidates returned | Shown | Enabled |", markdown)
+                    self.assertIn("| Source | Search status | Candidates in pool | Globally shown | Enabled |", markdown)
                 self.assertIn("Enabled sources", output.getvalue())
 
     def test_registry_only_fallback_names_the_listing_accurately(self):

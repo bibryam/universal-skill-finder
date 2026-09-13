@@ -6,7 +6,7 @@ Developer interface: use `search --json` for machine-readable output through the
 sh scripts/run.sh search "pdf forms" --json
 ```
 
-By default, every enabled source is searched, a bounded accepted pool is frozen, and `results` contains the first page of up to 10 destination-verified findings. `--count N` sets the overall snapshot cap and `--page-size N` sets page size. The legacy `--max-results` controls the same overall cap. Explicit `--report-json PATH` saves ordering, evidence and numbering for `page` and `explain`; direct CLI searches do not persist reports automatically. `--json` and `--markdown` are mutually exclusive. See [SKILL.md](../SKILL.md).
+By default, every enabled source is searched, a bounded accepted pool is frozen, and `results` contains the first page of up to 10 destination-verified findings. Page size is a maximum, not a guarantee: when the deadline, request budget, or 30-candidate scan bound stops verification early, the report marks a nonempty underfilled page incomplete and records how many candidates were checked and deferred. `--count N` sets the overall snapshot cap and `--page-size N` sets page size. The legacy `--max-results` controls the same overall cap. Explicit `--report-json PATH` saves ordering, evidence and numbering for `page` and `explain`; direct CLI searches do not persist reports automatically. `--json` and `--markdown` are mutually exclusive. See [SKILL.md](../SKILL.md).
 
 For a saved report, `page --report SNAPSHOT --more` materializes the next verified page from the frozen pool without querying sources or extracting a cursor. It raises the cap by one page only when the current cap has been reached and candidates remain (maximum 100). `--extend-count N` sets an explicit larger overall cap. `page --report SNAPSHOT --cursor TOKEN` remains available for explicit continuation or replay; a consumed cursor is replay-safe and a forged, stale, or unrelated cursor is rejected. Do not combine `--cursor` and `--more`. Pool exhaustion requires a separate new or deeper search.
 
@@ -23,7 +23,7 @@ The top-level document contains:
 | Field | Meaning |
 |---|---|
 | `schema_version` | Search output contract version, currently `2` |
-| `report_format_version` | Human/paged report contract, currently `2` |
+| `report_format_version` | Human/paged report contract, currently `3` |
 | `mode` | `online`, `offline_preview`, or `dry_run` |
 | `provenance` | Release and contract versions plus code, catalogue, and effective-configuration revisions |
 | `query` | Cleaned query sent to runnable sources |
@@ -35,12 +35,16 @@ The top-level document contains:
 | `requested_count`, `page_size` | Overall requested cap and current page size |
 | `accepted_occurrences`, `unique_count` | Frozen pre-merge and merged pool counts |
 | `eligible_count`, `unavailable_count`, `inconclusive_count`, `not_checked_count` | Disjoint destination-validation partitions |
+| `validation_checked_count`, `validation_deferred_count` | Identities whose bounded final validation completed without hitting a stop bound, and identities deferred by that bound |
+| `validation_stop_reason`, `validation_stopped_reason`, `page_incomplete` | Stable stop code, bounded human explanation, and whether a nonempty page stopped below its target |
 | `page_start`, `page_shown`, `materialized_total` | Current-page and cumulative numbering counts |
 | `snapshot`, `continuation`, `show_more_available`, `show_more_cursor`, `can_explain` | Actual saved-state and follow-up availability; Show more is explicit and frozen-pool only |
 | `timings` | Measured phase durations and selected deadline settings, not an SLA |
 | `notes` | Bounded diagnostic summaries, including known cache-access and DNS failures; saved notes on continuation are labelled as original-search context |
 | `continuation_page`, `coverage_context`, `pool_exhausted`, `has_pending` | Continuation rendering context; coverage context is `saved` or `unavailable` |
 | `search_timings` | Original search phase measurements retained on continuation; page work is in `timings.page_ms` |
+
+Validation stop codes are `page_full`, `pool_exhausted`, `deadline_reached`, `request_budget_reached`, `scan_limit_reached`, `validation_unavailable`, `validation_deferred`, or `validation_state_unavailable`. Only bounded-stop codes with deferred work make a nonempty page incomplete.
 
 ## Example
 
@@ -49,7 +53,7 @@ This example is illustrative, not a claim about a real registry or repository:
 ```json
 {
   "schema_version": 2,
-  "report_format_version": 2,
+  "report_format_version": 3,
   "mode": "online",
   "query": "pdf forms",
   "generated_at": "2026-01-01T12:00:00+00:00",
@@ -249,7 +253,7 @@ URL identities retain query, fragment, and semicolon parameters. Query order is 
 | `enabled` | Effective configured enablement, independent of query selection or source availability |
 | `status` | Completion, selection, cache, or failure state |
 | `incomplete_results` | Boolean, independent of `status`: upstream search or file validation was incomplete; default false for older compatible reports |
-| `result_count` | Candidates admitted from this source after its code-owned relevance policy |
+| `result_count` | Bounded candidates admitted from this source after its code-owned relevance policy; not the source's total matches |
 | `elapsed_ms` | Source work time |
 | `detail` | Bounded diagnostic text, if any |
 | `cache_age_seconds` | Cache age for cached results, if known |
@@ -260,7 +264,7 @@ URL identities retain query, fragment, and semicolon parameters. Query order is 
 | `requested_limit`, `effective_limit` | Requested and provider-effective candidate depths |
 | `source_total`, `total_relation` | Provider-reported total plus `exact`, `lower_bound`, or `unknown`; unknown is null |
 | `admission_status`, `live_status`, `cache_status`, `health_status` | Scheduling, request, cache and health state kept separate |
-| `shown` | Unique results on this page attributed to the source; not additive across sources |
+| `shown` | Unique globally ranked and destination-verified results on this page attributed to the source; not additive across sources |
 
 Common statuses include:
 

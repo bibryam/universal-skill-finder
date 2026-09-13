@@ -16,7 +16,8 @@ from universal_skill_finder.cache import Cache
 from universal_skill_finder.federation import UniversalSkillFinder
 from universal_skill_finder.models import SearchReport
 from universal_skill_finder.versioning import (
-    ADAPTER_CONTRACT_VERSION, CACHE_FORMAT_VERSION, SCHEMA_VERSION, SEARCH_REPORT_SCHEMA_VERSION, VERSION,
+    ADAPTER_CONTRACT_VERSION, CACHE_FORMAT_VERSION, REPORT_FORMAT_VERSION, SCHEMA_VERSION,
+    SEARCH_REPORT_SCHEMA_VERSION, VERSION,
     effective_config_revision, release_metadata,
 )
 from test_universal_skill_finder import FakeHttp, StaticAdapter, candidate, finder_config, registry_source
@@ -41,6 +42,7 @@ class VersioningTests(unittest.TestCase):
         self.assertEqual(metadata["schema_version"], SCHEMA_VERSION)
         self.assertEqual(metadata["adapter_contract_version"], ADAPTER_CONTRACT_VERSION)
         self.assertEqual(metadata["cache_format_version"], CACHE_FORMAT_VERSION)
+        self.assertEqual(metadata["report_format_version"], REPORT_FORMAT_VERSION)
         self.assertEqual(metadata["revision_scope"], "skill")
         for field in ("code_revision", "catalogue_revision"):
             self.assertRegex(metadata[field], r"^sha256:[0-9a-f]{64}$")
@@ -142,6 +144,9 @@ class VersioningTests(unittest.TestCase):
         self.assertEqual(report["schema_version"], SEARCH_REPORT_SCHEMA_VERSION)
         self.assertEqual(report["query"], "pdf")
         self.assertEqual(report["results"], [])
+        self.assertEqual(report["report_format_version"], REPORT_FORMAT_VERSION)
+        self.assertFalse(report["page_incomplete"])
+        self.assertEqual(report["validation_deferred_count"], 0)
         self.assertEqual(report["provenance"]["release_version"], VERSION)
         json.dumps(report, allow_nan=False)
 

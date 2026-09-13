@@ -3,6 +3,7 @@ from __future__ import annotations
 import io
 import json
 import sys
+import time
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
 from dataclasses import replace
@@ -25,6 +26,8 @@ from universal_skill_finder.snapshot import (
     save_exclusive_path,
     seed_initial_page,
 )
+from universal_skill_finder.runtime import NetworkPolicy
+from universal_skill_finder.versioning import REPORT_FORMAT_VERSION
 from test_presentation import result
 
 
@@ -191,6 +194,81 @@ class CliV2Tests(unittest.TestCase):
             self.assertEqual(json.loads(output)["results"][0]["result_number"], 2)
             self.assertEqual(json.loads(repeat_output)["results"][0]["result_number"], 2)
             validate.assert_called_once()
+
+    def test_nonempty_continuation_reports_deadline_underfill(self):
+        with TemporaryDirectory() as temporary:
+            path = Path(temporary) / "snapshot.json"
+            rows = [
+                result(id=f"skill:{index}", name=f"PDF {index}", validation_status="not_checked")
+                for index in range(3)
+            ]
+            snapshot = create_snapshot(
+                query="pdf", options={"thorough": False}, config_revision="fixture",
+                ordered_pool=[row.id for row in rows],
+                result_records={row.id: frozen_record(row) for row in rows},
+                requested_cap=3, page_size=3,
+            )
+            save_exclusive_path(path, snapshot)
+
+            def slow_eligible(*_args, **_kwargs):
+                time.sleep(0.02)
+                return {"status": "eligible"}
+
+            policy = NetworkPolicy(1.0, 1.0, 0.01)
+            with patch("universal_skill_finder.cli.NetworkPolicy.for_mode", return_value=policy), \
+                 patch("universal_skill_finder.cli.validate_frozen_result_record", side_effect=slow_eligible):
+                code, output, error = self.invoke([
+                    "page", "--report", str(path), "--json", "--progress", "off",
+                ])
+
+        document = json.loads(output)
+        self.assertEqual((code, error), (0, ""))
+        self.assertEqual(document["report_format_version"], REPORT_FORMAT_VERSION)
+        self.assertEqual(len(document["results"]), 1)
+        self.assertTrue(document["page_incomplete"])
+        self.assertEqual(document["validation_stop_reason"], "deadline_reached")
+        self.assertEqual(document["validation_deferred_count"], 2)
+        self.assertIn("deadline", document["validation_stopped_reason"])
+
+    def test_replayed_underfilled_page_uses_its_own_number_range(self):
+        with TemporaryDirectory() as temporary:
+            path = Path(temporary) / "snapshot.json"
+            rows = [
+                result(id=f"skill:{index}", name=f"PDF {index}", validation_status="not_checked")
+                for index in range(4)
+            ]
+            snapshot = create_snapshot(
+                query="pdf", options={"thorough": False}, config_revision="fixture",
+                ordered_pool=[row.id for row in rows],
+                result_records={row.id: frozen_record(row) for row in rows},
+                requested_cap=4, page_size=3,
+                report_metadata={"mode": "online"},
+            )
+            first = materialize_page(
+                snapshot, None,
+                validate=lambda _identity: {"status": "eligible"},
+                can_validate=lambda identity, _record: identity == rows[0].id,
+            )
+            self.assertTrue(first.has_pending)
+            later = materialize_page(
+                first.snapshot, first.next_cursor,
+                validate=lambda _identity: {"status": "eligible"},
+                page_size=3,
+            )
+            self.assertEqual(len(later.snapshot.result_numbers), 4)
+            save_exclusive_path(path, later.snapshot)
+            root = encode_cursor(snapshot.snapshot_id, 0, 0)
+
+            code, output, error = self.invoke([
+                "page", "--report", str(path), "--cursor", root, "--json", "--progress", "off",
+            ])
+
+        document = json.loads(output)
+        self.assertEqual((code, error), (0, ""))
+        self.assertEqual([row["result_number"] for row in document["results"]], [1])
+        self.assertTrue(document["page_incomplete"])
+        self.assertEqual(document["validation_stop_reason"], "validation_deferred")
+        self.assertEqual(document["validation_deferred_count"], 3)
 
     def test_frozen_eligible_flag_without_link_proof_cannot_bypass_validation(self):
         with TemporaryDirectory() as temporary:
