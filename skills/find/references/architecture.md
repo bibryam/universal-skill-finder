@@ -25,11 +25,13 @@ bundled defaults + sources.json
                               \       /
                          normalized candidates
                                   |
-                   identity merge + relevance-first ranking
+                   conservative identity merge
                                   |
-                    results + coverage + handoff
+                    70/20/10 ranking + frozen pool
                                   |
-             verified cards + coverage + host-specific proposals
+             compact pages ---- explicit Inspect #N
+                                      |
+                         live proof + install proposal
 ```
 
 ## Three extension units
@@ -57,7 +59,7 @@ The implementation has four useful families:
 
 Use an existing family when its contract fits exactly. Add a reviewed adapter when a source needs OAuth, request signing, POST semantics, custom pagination, HTML parsing, non-JSON data, or a response that cannot be expressed safely by `http-json-v1`.
 
-`tessl` is a named registry adapter for the public JSON:API hybrid-search contract, not a wrapper around the Tessl CLI or MCP server. It requests public skill-bearing index entries in one bounded anonymous GET, maps validated individual GitHub skills and inspection-only skill bundles separately, and preserves incomplete coverage. For an individual GitHub skill, the adapter retains the GitHub repository/path as canonical identity and separately constructs Tessl's reviewed `/registry/skills/github/OWNER/REPOSITORY/SKILL` source-listing route from strict repository and skill-name fields. Construction does not activate the link: the destination validator must confirm the exact Tessl page's canonical URL, repository, and skill name first. It does not follow remote pagination links or infer Git revisions from score versions. Scores are source-labelled assessments outside ranking; missing source identity and unsupported providers cannot silently merge unrelated skills.
+`tessl` is a named registry adapter for the public JSON:API hybrid-search contract, not a wrapper around the Tessl CLI or MCP server. It requests public skill-bearing index entries in one bounded anonymous GET, maps individual GitHub skills and inspection-only skill bundles separately, and preserves incomplete coverage. For an individual GitHub skill, the adapter retains the GitHub repository/path as canonical identity and constructs Tessl's code-owned `/registry/skills/github/OWNER/REPOSITORY/SKILL` discovery route from strict repository and skill-name fields. That structural review can activate a search link without asserting liveness. Inspect performs the later exact page and identity check. The connector does not follow remote pagination links or infer Git revisions from score versions. Scores remain source-labelled assessments; missing source identity and unsupported providers cannot silently merge unrelated skills.
 
 ## Upstream finder integration
 
@@ -85,19 +87,53 @@ User choices live in `universal-skill-finder/sources.json` unless an explicit pa
 
 Before this pipeline, the plugin's POSIX or PowerShell launcher checks Python 3.10+ and working SSL. Missing, old, or broken runtimes stop with exit 4 before engine imports, configuration/cache access, or network requests. The plugin manager itself may install files without this check. No global hooks or automatic dependency installation are used.
 
+```mermaid
+sequenceDiagram
+    actor User
+    participant Finder
+    participant Cache
+    participant Sources as Enabled sources
+    participant Ranker
+    participant Snapshot
+
+    User->>Finder: Search(query)
+    par For every enabled source
+        Finder->>Cache: Read(source, query, depth=20)
+        alt Fresh cache hit
+            Cache-->>Finder: Up to 20 native candidates
+        else Cache miss
+            Finder->>Sources: Search(query, limit=20)
+            Sources-->>Finder: Native-ranked candidates
+            Finder->>Cache: Store bounded response
+        end
+    end
+    Finder->>Ranker: Normalize and conservatively deduplicate
+    Ranker->>Ranker: Score full pool (70% + 20% + 10%)
+    Ranker-->>Finder: Deterministic ordered pool
+    Finder->>Snapshot: Freeze order, records, and coverage
+    Finder-->>User: Results 1-25
+    User->>Snapshot: Next page or Show all
+    Snapshot-->>User: Saved ranked slice, no network
+    User->>Finder: Inspect #N
+    Finder->>Sources: Validate only selected destination
+    Finder->>Snapshot: Store proof without reranking
+    Finder-->>User: Inspection and install readiness
+```
+
 1. Merge immutable bundled defaults with the user overlay.
 2. Resolve direct and pack-level enablement.
 3. Select or exclude sources requested on the command line.
 4. In `--dry-run`, report planned hosts without sending the query.
-5. Otherwise, admit runnable sources fairly by source class and execute them under the shared process supervisor, deadline, request/byte budget, per-origin permit, and API quota contracts. Supported process-isolation paths can terminate and reap blocked children; deterministic injected test adapters remain in-process.
+5. Otherwise, admit runnable sources fairly by source class and execute them concurrently under the shared process supervisor, deadline, request/byte budget, per-origin permit, and API quota contracts. Request up to 20 native results from every source by default. Supported process-isolation paths can terminate and reap blocked children; deterministic injected test adapters remain in-process.
 6. Isolate every source failure. Freeze the accepted pool at collection cutoff; late or preempted work remains explicit coverage rather than evidence that the source is down.
-7. Normalize source results into `Candidate` records and apply the adapter's code-owned retrieval contract. Repository and local catalogues are never padded to a requested limit. Every source must then pass the same positive compatible lexical floor before a candidate enters the public pool; provider selection or destination validity alone is not relevance evidence. Merge strong identities and narrowly reconcile pathless repository matches.
-8. Rank the frozen merged pool with `soft-native-v3`, retaining component evidence and deterministic tie-breaks.
-9. Validate exact public destinations under the remaining shared proof budget. Resolve exact GitHub `SKILL.md` content for target identity and install evidence, then validate the corresponding browsable GitHub directory and repository root as separate destinations under their reviewed GitHub contracts. Validate contributing native registry listings separately so successful target proof does not discard provenance links. Use authoritative branch/root checks only when needed; otherwise retain a reviewed inspection destination. Replenish failed identities from the same frozen rank order, checking at most 30 identities per page.
-10. Return schema-2 results, validation partitions, progress/provenance, and ordered source coverage. A saved snapshot can continue or explicitly extend its cap without rerunning discovery.
-11. For a known assistant, annotate the complete frozen result pool from one bounded local installed-skill inventory unless explicitly skipped. These local observations never enter ranking, source candidates or query caches.
+7. Normalize source results into `Candidate` records and apply the adapter's code-owned retrieval contract. Provider-query connectors retain the provider's bounded response even when local metadata has no lexical overlap. Repository and local catalogues search their full bounded catalogue locally and still require a compatible lexical match. They are never padded to the requested depth.
+8. Merge only strong identities and narrowly reconcile pathless repository matches. Preserve every occurrence and source-native metric separately.
+9. Rank the complete unique pool with `discovery-70-20-10-v1`, retain component evidence and deterministic tie-breaks, then freeze the order. Destination state is not an input.
+10. Publish the first 25 ranked results by default. A connector-reviewed registry route or normalized GitHub identity may be shown as a discovery link without a network validation claim. Save up to 100 numbered results for ordinary paging.
+11. For a known assistant, annotate the complete frozen result pool from one bounded local installed-skill inventory unless explicitly skipped. These observations never enter ranking, source candidates, or query caches.
+12. `Next page` and `Show all` slice only the frozen pool. `Inspect #N` separately validates that result's current destinations and exact target, then stores the evidence without changing rank or numbering.
 
-Registry query responses use a short cache keyed by source, exact query, and requested limit. `cache list` exposes available query metadata for offline use. Repository catalogues use a longer cache because indexing a repository archive costs more than filtering an existing catalogue; a cached catalogue can answer new queries locally. `--offline` uses cached registry queries, cached repository catalogues, and local directories only. A cache miss is reported, not bypassed with a network request.
+Registry query responses use a short cache keyed by source, exact query, and requested depth, so the default cache entry contains at most 20 source-ranked candidates. `cache list` exposes available query metadata for offline use. Repository catalogues use a longer cache because indexing a repository archive costs more than filtering an existing catalogue; a cached catalogue can answer new queries locally. `--offline` uses cached registry queries, cached repository catalogues, and local directories only. A cache miss is reported, not bypassed with a network request.
 
 Cross-process cache leases return boolean-compatible typed outcomes: acquired, busy, permission denied or storage unavailable. Failed acquisition never grants ownership or bypasses source cooldowns. Local access/storage errors are distinct from lock contention, including in cached fallback coverage and proof diagnostics. Known DNS and cache-access failures are summarized in report notes without copying arbitrary exception text. A sandboxed host must request access through its normal permission mechanism for the configured cache and public network; the engine does not silently relocate state or relax verification.
 
@@ -119,27 +155,33 @@ Canonical URL identities retain query, fragment, and semicolon parameters becaus
 
 ## Ranking
 
-`soft-native-v3` combines bounded lexical evidence from the title, description, and path with a bounded contribution only from typed, skill-scoped skills.sh install observations. Separator-only compound spellings such as `anti-slop` and `antislop` are equivalent. At least one compatible query term must be present before a result can enter the public pool. A query term family contributes once. Unknown native order, provider selection alone, destination validity, repository stars, generic popularity, security grades, and source overlap contribute zero. Deterministic title/description corroboration, name, and stable identity settle ties. The report retains algorithm version, component scores, tie-breaks, and the evidence actually used.
+`discovery-70-20-10-v1` computes one bounded score from three components:
 
-Reciprocal rank fusion remains a schema compatibility diagnostic, not an ordering input. This avoids treating correlated registries as independent votes or normalizing incompatible metrics into a universal score. Lexical evidence is still not semantic confidence; destination proof establishes reachability and identity, not capability quality or safety.
+- **70% query relevance.** Name coverage contributes 50% of this component, description coverage 30%, path/tags 10%, and an exact or ordered phrase 10%. All lexical evidence comes from one coherent occurrence rather than stitching the best fields from different sources.
+- **20% source-local signal.** Native rank contributes 70% of this component after normalization against the requested source depth. One typed skill-level metric contributes 30% after percentile normalization only among comparable observations from that same source. Missing native ranks or comparable metrics are neutral.
+- **10% independent-source corroboration.** One connector family contributes 0, two contribute 0.5, and three or more contribute 1. Mirrored source instances using the same adapter count once.
+
+Separator-only compounds such as `anti-slop` and `antislop` are equivalent. Provider-query connectors can contribute low-scoring candidates without local lexical overlap because the remote provider already evaluated the query; local repository and directory searches still require a positive match. Final ties use relevance, phrase match, source signal, corroboration, normalized name, and stable identity in that order.
+
+Raw counts are never compared across sources or added together. Destination validity, installation readiness, source completion order, trust labels, repository-level metrics, security grades, and reciprocal rank fusion do not affect the selected order. RRF remains a compatibility diagnostic. Lexical evidence is not semantic confidence, and destination proof establishes reachability and identity rather than capability quality or safety.
 
 ## Coverage is part of the answer
 
 Every configured source gets one coverage record. Common states include `ok`, `cached`, `disabled`, `not_selected`, `excluded`, `planned`, `offline_miss`, `auth_missing`, `auth_failed`, `rate_limited`, `timeout`, `schema_mismatch`, `archive_limit`, and `failed`.
 
-`AdapterContext.incomplete_results` and `detail` let a connector disclose incomplete upstream searches, skipped validations or exhausted bounds without discarding verified candidates. Federation persists those fields through query caching, including zero-result responses; `Coverage.incomplete_results` is independent of `ok`/`cached`. The presenter labels partial coverage explicitly, and strict mode fails. Legacy compatible cache payloads without these optional fields default to complete.
+`AdapterContext.incomplete_results` and `detail` let a connector disclose incomplete upstream searches, skipped source checks, or exhausted bounds without discarding accepted candidates. Federation persists those fields through query caching, including zero-result responses; `Coverage.incomplete_results` is independent of `ok`/`cached`. The presenter labels partial coverage explicitly, and strict mode fails. Legacy compatible cache payloads without these optional fields default to complete.
 
 GitHub code search has one fixed API origin and explicitly named search credential, public-only retained candidates, bounded file/byte/request/time budgets, verified Git blob hashes and required name/description frontmatter. The legacy API has no documented public-only query filter, so setup calls for a token without private-repository access; broader tokens may return private metadata that is discarded. Public blob requests omit credentials to enforce public accessibility, at the cost of lower anonymous quotas. Raw content proof, the browsable GitHub skill directory, and the repository root remain separate destinations with separate roles. Missing commit evidence never becomes a guessed branch. Optional repository metrics are cached-only and never delay this connector. It is opt-in, not a replacement for known-repository catalogue scanning.
 
-Therefore “no results” means only “no matches in the sources that completed.” It never proves ecosystem-wide absence. Human coverage labels distinguish the bounded candidates each source contributed to the frozen pool from results that survived global ranking and destination verification. A source's pool count is not its total match count.
+Therefore “no results” means only “no candidates in the sources that completed.” It never proves ecosystem-wide absence. Coverage labels distinguish the bounded candidates each source contributed from results visible on the globally ranked page. A source's pool count is not its total match count, and page counts overlap when several sources reported the same skill.
 
-Final destination verification keeps its fixed deadline, request budget, concurrency limit, and 30-identity scan cap. If one of those bounds leaves a nonempty page below its configured maximum, the report records a stable stop reason, checked and deferred counts, and an explicit incomplete-page label. A smaller exhausted pool is complete, not incomplete. Saved continuation resumes the same frozen ordering without rerunning sources.
+Destination verification is on demand. Inspect keeps the existing fixed deadline, request budget, concurrency limit, and exact-target proof rules, but applies them to one selected result. Failure or timeout changes only that result's inspection evidence. It never removes, renumbers, or reranks discovery results.
 
-The plugin uses `search --markdown --assistant codex` or `--assistant claude-code` internally through the launcher. `presentation.py` renders deterministic scan-first numbered cards directly in the terminal/conversation: skill name, up to 400 characters of description, a combined repository/folder Location, Found on provenance, source-labelled Signals, and numbered actions. `main` is omitted while non-default refs and reported/resolved target differences remain visible. A checked GitHub tree directory is the primary browse destination, the repository label requires its own checked root proof, and each Found on label uses that source's independently checked native listing. Raw content and GitHub blob-file URLs are verification evidence, never default human navigation. Missing fields fall back to a checked listing or repository role when available, then to explicit unavailable text; the renderer never invents a location. Every coverage record follows, distinguishing configured enablement from live success, cached data, failure, and intentional skipping. JSON remains the separate structured-data contract.
+The plugin uses `search --markdown --assistant codex` or `--assistant claude-code` internally through the launcher. `presentation.py` renders deterministic two-line numbered discovery entries directly in the terminal/conversation: linked name and path, then reporting sources, one metric, and up to 180 characters of description. The compact page omits source tables and destination partitions; `details` and `inspect` expose those only when requested. Raw content and GitHub blob-file URLs are never human navigation. JSON remains the separate structured-data contract.
 
 Only an explicit HTML-report request should use `search --html` or `page --html`. This optional export has native disclosure controls and the same proof gates for report-derived links, without JavaScript or external assets. Its fixed project footer is the same application-owned exception as in Markdown. It is not the default skill presentation; browser availability is not a reason to select it. Compact-output requests use Markdown/plain output and do not launch a browser.
 
-Reports lead with a short summary block separating query, result counts and searched/cached source counts; detailed candidate, deduplication, validation, pagination and coverage counts live in Notes and source coverage below the cards. Markdown keeps bold summary/field labels. `terminal.py` adds fixed ANSI color/bold only after plain report rendering, at the interactive CLI stdout boundary. The renderer stays deterministic and ANSI-free; saved artifacts, pipes, Markdown and JSON are never styled. `NO_COLOR` and unsupported/dumb terminals disable styling. Default Markdown/plain cards say `Inspect and install: type Inspect #N  Install #N` only when the checked target and assistant support an exact proposal; they do not repeat the command. Styling never activates additional links or implies a safety verdict.
+Reports lead with the query and one summary line containing unique pool size, completed sources, visible range, and ordering basis. Markdown keeps only the minimal bold labels. `terminal.py` adds fixed ANSI color/bold only after plain report rendering, at the interactive CLI stdout boundary. The renderer stays deterministic and ANSI-free; saved artifacts, pipes, Markdown and JSON are never styled. `NO_COLOR` and unsupported/dumb terminals disable styling. Styling never activates additional links or implies a safety verdict.
 
 Completed online reports end with the single-line canonical project link `[https://github.com/bibryam/universal-skill-finder](https://github.com/bibryam/universal-skill-finder)`, without ASCII art or a verification caveat. The application owns this fixed URL, so the footer needs no report proof or network work. It is absent from previews, offline output, help, source management and all-source failures.
 
@@ -147,7 +189,7 @@ Completed online reports end with the single-line canonical project link `[https
 
 `sources explain` uses the same allowlisted metadata, never raw API routes, headers, or local-directory paths. `doctor` checks required named-adapter and generic-header credential references without printing values. Setup diagnostics are not live authentication checks.
 
-Installation-command fallbacks contain a repository or listing link and reason. The result table also shows available count metrics with provenance. Repository stars are used only from a fresh, separately scoped cache entry whose repository identity, value, and observation time validate. Search never fetches or waits for them, and they never affect ranking.
+Inspection fallbacks contain a checked repository or listing link and reason. Compact discovery results show one available count metric; inspection preserves the full source-separated observations. Repository stars are used only from a fresh, separately scoped cache entry whose repository identity, value, and observation time validate. Search never fetches or waits for them, and repository-scoped metrics never affect ranking.
 
 Display-only installation commands use the pinned Skills CLI interface with an exact GitHub directory, explicit branch/tag, exact skill name, `--agent`, and `--copy`. No executable hints from registries or caches are accepted. Source inspection and explicit approval precede any separate execution by the coding assistant. The external CLI has additional runtime requirements and can skip its own prompts inside agents; see the [installation handoff](result-schema.md#installation-handoff).
 

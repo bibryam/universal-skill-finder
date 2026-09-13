@@ -45,17 +45,18 @@ class RankingQualityTests(unittest.TestCase):
         self.assertEqual([row.text_match_percent for row in merged], [100, 50])
         self.assertLess(merged[0].rank_fusion_score, merged[1].rank_fusion_score)
 
-    def test_rrf_is_diagnostic_and_does_not_override_selected_ties(self):
+    def test_corroboration_can_settle_relevance_ties_while_rrf_stays_diagnostic(self):
         rows = [
             occurrence("one", "single", name="PDF forms one", description="Read forms"),
             occurrence("one", "mirrored", name="PDF forms two", description="Read forms", rank=2),
             occurrence("two", "mirrored", name="PDF forms two", description="Read forms", rank=3),
         ]
+        rows[2].adapter = "independent-stub"
         merged = self.finder._merge(rows, "pdf forms")
-        self.assertEqual([row.skill_path for row in merged], ["single", "mirrored"])
+        self.assertEqual([row.skill_path for row in merged], ["mirrored", "single"])
         self.assertEqual(merged[0].text_match_percent, merged[1].text_match_percent)
-        self.assertLess(merged[0].rank_fusion_score, merged[1].rank_fusion_score)
-        self.assertEqual([row.ranking["components"]["skill_adoption"] for row in merged], [0.0, 0.0])
+        self.assertGreater(merged[0].rank_fusion_score, merged[1].rank_fusion_score)
+        self.assertEqual([row.ranking["components"]["corroboration"] for row in merged], [0.5, 0.0])
 
     def test_merge_stays_lossless_before_public_relevance_admission(self):
         rows = [
@@ -77,7 +78,7 @@ class RankingQualityTests(unittest.TestCase):
         for permutation in itertools.permutations(rows):
             self.assertEqual([row.to_dict() for row in self.finder._merge(list(permutation), "pdf forms")], expected)
 
-    def test_popularity_metrics_do_not_change_ranking(self):
+    def test_untyped_raw_metrics_do_not_change_ranking(self):
         rows = [
             occurrence("one", "alpha", name="Alpha PDF forms", description="Fill forms"),
             occurrence("two", "zeta", name="Zeta PDF forms", description="Fill forms"),

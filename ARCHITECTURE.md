@@ -1,6 +1,6 @@
 # Architecture
 
-Universal Skill Finder is a local discovery engine packaged once and exposed through Claude Code and Codex plugins. It queries enabled sources, freezes and ranks a bounded pool, checks destinations, and returns a deterministic page of up to 10 verified results by default. It does not host an index, execute discovered code, or install results during search.
+Universal Skill Finder is a local discovery engine packaged once and exposed through Claude Code and Codex plugins. It queries enabled sources concurrently, ranks and freezes a bounded pool, and returns a deterministic page of 25 discovery results by default. It checks a destination only when the user inspects a result. It does not host an index, execute discovered code, or install results during search.
 
 **Source** is the umbrella term for a searchable location. Source types are **Registry** (a hosted skill index), **Repository** (Git files containing skills), **Local directory** (files on disk), and **Search index** (GitHub code search). A **catalogue** is a combined list or index, such as the bundled source catalogue. A **connector** is the code that searches a source. The existing `source_*` fields and source-pack formats use the same terminology.
 
@@ -29,12 +29,12 @@ flowchart TD
     I --> L
     J --> L
     P --> L
-    L --> M[Relevance admission + identity merge + soft-native-v3 ranking]
-    M --> R[Bounded anonymous destination proof]
-    R --> S[Frozen snapshot + stable pagination]
+    L --> M[Conservative identity merge + 70/20/10 ranking]
+    M --> S[Frozen snapshot + stable pagination]
     S --> Q[Optional read-only installed-skill annotation]
-    Q --> N[Verified cards + coverage, or schema-2 JSON]
-    N --> O[Separate user-approved inspection or installation]
+    Q --> N[Compact discovery pages or schema-2 JSON]
+    N --> R[Explicit Inspect N: bounded destination proof]
+    R --> O[Separate user-approved installation]
 ```
 
 Python 3.10+ and working SSL are the only search-runtime prerequisites. POSIX and PowerShell launchers check them before importing the engine. Failure stops with exit 4 before configuration/cache access or network requests. Plugin managers may copy files before this check; installation success is not proof of runtime readiness.
@@ -44,15 +44,15 @@ Python 3.10+ and working SSL are the only search-runtime prerequisites. POSIX an
 | Boundary | Implementation | Responsibility |
 |---|---|---|
 | Host packaging | `.codex-plugin`, `.claude-plugin`, `.agents/plugins` | Thin plugin and marketplace manifests, not duplicate engines |
-| Agent workflow | [SKILL.md](skills/find/SKILL.md) | Plain requests, verified card output, saved follow-ups and separate installation approval |
+| Agent workflow | [SKILL.md](skills/find/SKILL.md) | Plain requests, compact discovery output, saved follow-ups and separate inspection/installation approval |
 | Configuration | [config.py](skills/find/scripts/universal_skill_finder/config.py) | Defaults, one source-choice file, packs, validation, persistent controls |
 | Connector contract | [adapters/base.py](skills/find/scripts/universal_skill_finder/adapters/base.py), [adapters/__init__.py](skills/find/scripts/universal_skill_finder/adapters/__init__.py) | Protocol and one immutable connector catalogue |
-| Orchestration | [federation.py](skills/find/scripts/universal_skill_finder/federation.py) | Fair admission, supervised source work, pool freeze, normalization, ranking and proof scheduling |
+| Orchestration | [federation.py](skills/find/scripts/universal_skill_finder/federation.py) | Fair admission, supervised source work, normalization, deduplication, ranking and pool freeze |
 | GitHub discovery | [github_search.py](skills/find/scripts/universal_skill_finder/adapters/github_search.py) | Fixed-origin, explicit-token public code search and bounded file validation |
 | Tessl discovery | [tessl.py](skills/find/scripts/universal_skill_finder/adapters/tessl.py) | Anonymous bounded hybrid search; individual skills and inspection-only skill packages |
 | Local inventory | [installed.py](skills/find/scripts/universal_skill_finder/installed.py) | Read-only, host-specific installed-instruction evidence after ranking |
 | Input boundaries | [http.py](skills/find/scripts/universal_skill_finder/http.py), [validation.py](skills/find/scripts/universal_skill_finder/validation.py), repository adapters, [models.py](skills/find/scripts/universal_skill_finder/models.py) | Guarded discovery and separate anonymous destination proof |
-| Output | [presentation.py](skills/find/scripts/universal_skill_finder/presentation.py), [source_presentation.py](skills/find/scripts/universal_skill_finder/source_presentation.py) | Proof-gated cards, coverage, progress/previews and safe configuration views |
+| Output | [presentation.py](skills/find/scripts/universal_skill_finder/presentation.py), [source_presentation.py](skills/find/scripts/universal_skill_finder/source_presentation.py) | Structurally reviewed discovery links, compact pages, detailed inspection and safe configuration views |
 | Provenance | [versioning.py](skills/find/scripts/universal_skill_finder/versioning.py), [cache.py](skills/find/scripts/universal_skill_finder/cache.py) | Central versions, content revisions, compatible cache envelopes |
 | Release | [check_release.py](scripts/check_release.py), [build_release.py](scripts/build_release.py) | Portable-payload checks and allowlisted, checksummed release artifacts |
 
@@ -89,7 +89,7 @@ A connector must:
 3. Raise `SourceUnavailable(status, detail)` for recognized failures such as `auth_missing`, `rate_limited`, or `schema_mismatch`. Do not turn malformed responses into false successful empties.
 4. Use the guarded transport and bounded readers. Never execute discovered instructions, scripts, hooks, or installation hints; never mutate configuration.
 5. Respect offline mode. Query-cached registries are served by federation; catalogue-cached connectors must handle catalogue/offline behavior themselves; uncached local discovery reads only local files.
-6. Set `context.incomplete_results = True` with a bounded `detail` if upstream incompleteness or skipped checks prevent a fully verified response. Keep valid candidates, including an empty partial set. Federation preserves the flag in fresh/cached coverage; strict mode fails and the table shows a partial status.
+6. Set `context.incomplete_results = True` with a bounded `detail` if upstream incompleteness or skipped checks prevent a complete response. Keep valid candidates, including an empty partial set. Federation preserves the flag in fresh/cached coverage; strict mode fails and the table shows a partial status.
 
 Federation validates fresh and cached candidates and rebinds source ID, kind, adapter, and provenance to the configured source. A registry cannot impersonate another source through response fields. Unexpected failures are isolated to that source and remain visible in coverage.
 
@@ -105,22 +105,23 @@ Cache format and adapter-contract versions are included in keys and envelopes. I
 
 ## Search and output contracts
 
-The request pipeline is: validate configuration, resolve direct/pack enablement, apply explicit selection/exclusion, preview or search concurrently, normalize, merge, rank, and present.
+The request pipeline is: validate configuration, resolve direct/pack enablement, apply explicit selection/exclusion, search concurrently, normalize, conservatively deduplicate, rank the complete pool, freeze it, and present a slice.
 
 - Search defaults to every enabled source. A disabled pack blocks its directly enabled sources.
 - Dry runs show planned destinations without contacting them. GitHub repository discovery uses `codeload.github.com`; optional stars are read only from a separate fresh cache and never trigger a metadata request.
 - Every configured source gets a coverage record, including failures, disabled/excluded sources, offline misses, cached answers, and successful zero-match responses.
 - Names alone never identify a skill. Repository/path and hosted identity take precedence over a canonical URL. URL query parameters, fragments, and semicolon parameters are retained because they can distinguish skills.
-- `soft-native-v3` requires positive compatible lexical evidence, then ranks title/description/path evidence plus a bounded contribution from typed, skill-scoped skills.sh installs. It treats separator-only compounds such as `anti-slop` and `antislop` as equivalent. Provider selection or destination validity alone cannot admit a result. Unknown native order, repository stars, generic popularity and source overlap do not increase the score. Deterministic evidence and tie-breaks are retained per result.
-- The accepted pool freezes at collection cutoff. Final proof replenishes in frozen rank order; unavailable or unchecked identities do not occupy normal cards.
-- Default output materializes up to 10 verified cards. `--count` caps the snapshot and `--page-size` controls each page. Explicit snapshots preserve ordering, proof evidence and stable numbering; continuation never reruns source queries. `page --extend-count N` can explicitly raise a saved snapshot's cap to at most 100 while consuming only its frozen pool.
-- Card fields are skill name, description, Location, Found on, Signals, and the inspection/install action. Raw `SKILL.md` proves content identity only. The GitHub skill directory, repository root, and each native source listing require separate destination proofs before their exact URLs become clickable. Search never runs a displayed command.
+- `discovery-70-20-10-v1` assigns 70% to query relevance, 20% to a normalized source-local signal, and 10% to independent connector-family corroboration. It records deterministic component evidence and tie-breaks. Raw metrics never cross source boundaries; destination state and installation readiness do not affect rank.
+- Provider-query connectors retain their bounded native results even if sparse metadata has no local lexical overlap. Repository and local catalogue connectors still require a positive query match.
+- The ranked pool freezes at collection cutoff. Default output requests up to 20 candidates per source, retains up to 100 overall, and materializes 25 compact results per page.
+- Explicit snapshots preserve complete result records, coverage, ranking evidence, and stable numbering. `Next page` and `Show all` perform no network access or reranking. `Search deeper` creates a new pool and may change numbers.
+- Search rows show linked name plus path, then sources, one source-native metric, and a short description. A link is a code-owned registry route or normalized GitHub identity, not a destination or installation proof. `Inspect #N` performs the fresh exact checks needed for a proposal. Search never runs a displayed command.
 
 The JSON search report is schema 2 and contains provenance, query/mode/page context, validation partitions, results, coverage, timing and explicit snapshot state. Additive occurrence/source fields retain their established names. See the [complete field definitions](skills/find/references/result-schema.md). Full reports may contain local paths and private queries; sanitize them before sharing. `sources list --json` and `sources explain` expose only allowlisted configuration metadata, credential-variable presence, and public origins.
 
 ### Registry-specific and installed-skill checks
 
-The default Tessl connector is a reviewed JSON:API adapter under the existing query-cache policy. Its fixed public endpoint and code-owned filters require no CLI, MCP server, account or credentials. Individual GitHub skills retain validated repository/path identity and a separate proof-gated native Tessl detail route; skill-containing packages stay labelled bundles with package inspection links. Neither a score version nor a package version is turned into a Git revision or exact skill-install target. Provider assessments remain outside federation ranking. See the [configuration contract](skills/find/references/configuration.md#tessl-registry).
+The default Tessl connector is a reviewed JSON:API adapter under the existing query-cache policy. Its fixed public endpoint and code-owned filters require no CLI, MCP server, account or credentials. Individual GitHub skills retain normalized repository/path identity and a code-owned Tessl discovery route; inspection later checks the page and exact identity. Skill-containing packages stay labelled bundles. Neither a score version nor a package version is turned into a Git revision or exact skill-install target. Provider assessments remain outside federation ranking. See the [configuration contract](skills/find/references/configuration.md#tessl-registry).
 
 `github-code-search` starts disabled. Once explicitly enabled with `UNIVERSAL_SKILL_FINDER_GITHUB_TOKEN`, it participates in normal all-enabled-source queries. It fixes the API origin and `SKILL.md` filename; retains only public repository matches; validates path/blob identity and required metadata; and applies per-search request, file, byte and time limits. The API has no documented public-only code-search qualifier, so setup calls for a dedicated token without private-repository access. Broader credentials may return private metadata, which is discarded. Blob and destination requests omit credentials, enforcing public accessibility despite visibility changes while accepting lower anonymous quotas. Code-search blob hashes are not commits. Only independently validated revision links can become revision metadata, and unsupported installation targets remain clickable inspection links. It neither crawls all GitHub nor adds discovered repositories to configuration.
 

@@ -3,7 +3,7 @@
 ### Find the skill your agent needs.
 
 Search registries, GitHub repositories, and local folders with one query.
-Get up to 10 ranked matches by default, with links, installation options, and source coverage.
+Request up to 20 candidates per source, rank the combined pool, and scan 25 results at a time.
 
 [Sources](#supported-sources) · [Install](#install) · [Usage](#use-it) · [Configuration](#choose-your-sources)
 
@@ -80,7 +80,7 @@ Find skills for reading and filling PDF forms.
 Find a React performance skill.
 ```
 
-By default, Universal Skill Finder searches every enabled source and returns up to 10 ranked matches. You can also invoke it directly:
+By default, Universal Skill Finder searches every enabled source in parallel, requests up to 20 candidates from each, retains up to 100 ranked results, and shows 25 at a time. You can also invoke it directly:
 
 | Agent | Standalone skill | Native plugin |
 |---|---|---|
@@ -91,24 +91,19 @@ In other agents, ask “Use Universal Skill Finder to find skills for PDF forms�
 
 ### From a result to an installation
 
-Reports stay in your terminal or agent conversation. They start with one short summary, then scan-first cards; detailed counts, warnings and source coverage follow below. Each card keeps up to 400 characters of description, combines repository and skill folder into one Location, and offers numbered inspection or installation actions instead of repeating a long command. Markdown keeps bold headings and labels. Direct CLI output adds color on supported interactive terminals; `NO_COLOR` disables it, and saved or redirected output has no ANSI codes. A browser report is available only if you explicitly ask for HTML.
+Reports stay in your terminal or agent conversation. The default page is deliberately dense: one summary followed by two lines per result. The first line contains the linked name and reported path; the second contains provenance, one source-native metric when available, and a short description. Detailed source coverage is available through **Search details**. Direct CLI output adds color on supported interactive terminals; `NO_COLOR` disables it, and saved or redirected output has no ANSI codes. A browser report is available only if you explicitly ask for HTML.
 
-Links appear only after the displayed destination identity is checked. A skill heading and Location open a browsable GitHub skill directory when one is verified; **Found on** opens each verified native registry listing. The raw `SKILL.md` URL is content evidence for verification and installation, not a browsing destination. Installation commands require stronger exact-target evidence. “Found” counts unique candidates, not guaranteed install-ready skills.
+Search links are code-owned registry routes or normalized GitHub identities. They are useful discovery links, not claims that a page is currently reachable, that the source description is accurate, or that the skill is install-ready. **Inspect #N** performs the live destination and exact-target checks for one selected result. Raw `SKILL.md` URLs remain internal evidence rather than browsing destinations.
 
 An abbreviated example, not a live result:
 
 ```text
 Search: pdf forms
 
-24 candidates · 10 shown
-Sources: 5 searched · 4 cached
+56 unique candidates · 9 sources completed · showing 1–25 · sorted by 70/20/10 score
 
-1. pdf
-Read and fill PDF forms.
-Location: anthropics/skills › skills/pdf
-Found on: anthropic-skills (source page), skillsmp (listing not verified)
-Signals: Not available
-Inspect and install: type Inspect #1  Install #1
+1. pdf · anthropics/skills/skills/pdf
+   anthropic-skills + skillsmp · 8.2K installs · Read and fill PDF forms.
 ```
 
 After selecting and reviewing #1, Universal Skill Finder can generate this Codex installation proposal:
@@ -117,16 +112,26 @@ After selecting and reviewing #1, Universal Skill Finder can generate this Codex
 npx skills@1.5.23 add https://github.com/anthropics/skills/tree/main/skills/pdf --skill pdf --agent codex --copy
 ```
 
-Say **“Inspect #1”** to review a result or **“Install #1”** to request installation. Searching never runs the installer, and installation requires your approval. GitHub skill installations use the separate [Skills CLI](https://github.com/vercel-labs/skills/tree/v1.5.23), with the requirements listed above.
+Say **“Inspect #1”** to check a result or **“Install #1”** to request installation. An installation request first needs the same inspection step. Searching never runs the installer, and installation requires your approval. GitHub skill installations use the separate [Skills CLI](https://github.com/vercel-labs/skills/tree/v1.5.23), with the requirements listed above.
 
-Say **“Next page”** or **“Show more”** to continue the saved search without rerunning sources. Numbering stays stable; Show more can raise the overall cap to 100 using the original candidate pool. Page size is an upper bound on verified results. If the verification deadline, request budget, or 30-candidate scan limit stops an underfilled page, the report labels it **incomplete page**, explains the stop, and gives the deferred count. For direct CLI use, `--count N` controls the overall cap, `--page-size N` controls page size, and `--report-json` saves the snapshot needed for continuation.
+Say **“Next page”** to read the next 25 results or **“Show all”** to display the frozen ranking up to its saved cap. Neither action contacts sources, verifies destinations, deduplicates again, or reranks, so numbering remains stable. **“Search deeper”** starts a new search with a larger per-source depth and can change the order. For direct CLI use, `--per-source-limit N` controls source depth, `--count N` controls the overall cap, `--page-size N` controls page size, and `--report-json` saves the snapshot needed for follow-ups.
+
+### How results are chosen
+
+1. Search every enabled source concurrently for up to 20 native results.
+2. Normalize fields and conservatively deduplicate strong identities. Names alone never merge.
+3. Rank the complete retrieved pool: 70% query relevance, 20% source-local rank and comparable metric signal, 10% independent-source corroboration.
+4. Freeze that order, then show results 1–25. Paging never changes the ranking.
+5. Verify a destination only when you ask to inspect that result.
+
+Metrics are normalized only among comparable observations from the same source. Raw counts from different registries are never added or compared. Destination status and installation readiness never affect rank. See the [architecture sequence](skills/find/references/architecture.md#federation-pipeline) and [ranking contract](skills/find/references/result-schema.md#ranking-rules) for details.
 
 <details>
 <summary>How to read signals and installed-skill labels</summary>
 
-Signals are source-labelled snapshots. Missing values appear as **Not available**. GitHub stars describe the whole repository; search uses only already cached repository metadata and never waits for a foreground star lookup. Popularity and Tessl assessments do not certify quality or safety.
+Signals are source-labelled snapshots. A compact row shows at most one; **Inspect #N** can show the full source-separated set. Missing values are omitted. GitHub stars describe the whole repository; search uses only already cached repository metadata and never waits for a foreground star lookup. Popularity and Tessl assessments do not certify quality or safety.
 
-If Universal Skill Finder cannot generate an install command, it links to a checked GitHub skill directory, repository root, or native source listing and explains why. It never substitutes a raw file URL for a browsing link.
+After inspection, if Universal Skill Finder cannot generate an install command, it links to a checked GitHub skill directory, repository root, or native source listing and explains why. It never substitutes a raw file URL for a browsing link.
 
 Universal Skill Finder checks standard local skill directories to label installed matches and name collisions without uploading their contents. This does not add those folders as search sources. Ask it to **skip the installed-skill check** to opt out.
 
@@ -202,7 +207,7 @@ Universal Skill Finder discovers skills; it does not scan them for security. Pub
 | `codex plugin` unavailable | Update Codex, or install the standalone skill folder. |
 | A source failed | Read the reported reason. Other sources still return results. Ask Universal Skill Finder to retry with fresh data. |
 | `cache access denied` or public hosts cannot resolve in a sandbox | Approve the host's normal access request for the same search if appropriate. Do not erase health state or change cache directories to bypass the restriction. |
-| Candidates found but zero verified results | Read the verification notes and source coverage. Incomplete checks do not mean there are no matching skills. |
+| Too few results | Open **Search details** to check per-source contribution and failures, then use **Search deeper** to request another 20 candidates per source. |
 | Output still uses an older layout | Start a new session and check which skill/plugin copy the host loaded. Editing a checkout does not update a separately installed copy. |
 | Missing API key | Set the named key or disable that optional source. Do not paste keys into source packs. |
 | No cached data offline | Retry online, or use a query that was previously cached. |

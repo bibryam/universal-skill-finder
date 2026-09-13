@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Search every enabled source concurrently for up to 20 native candidates by default, rank the complete deduplicated pool, retain up to 100 results, and show 25 compact two-line entries per page.
+- Replace destination-gated discovery with explicit `Inspect #N`: search links are structurally reviewed browse routes, while live destination and exact-target proof happens only for the selected result.
+- Rank with `discovery-70-20-10-v1`: 70% query relevance, 20% source-local normalized signal, and 10% independent-connector corroboration. Destination state, installation readiness, and raw cross-source metrics do not affect order.
+- Make Next page and Show all deterministic frozen-pool reads with stable numbering and no network, validation, deduplication, or reranking.
+- Move detailed source coverage behind Search details and document Search deeper as a new larger-pool search whose ranking can change.
+
 ## 0.1.4 - 2026-09-13
 
 - Mark destination-verification underfill as an incomplete page and report the bounded stop reason plus checked and deferred candidate counts.

@@ -123,8 +123,10 @@ class SearchDefaultTests(unittest.TestCase):
                 self.assertEqual(args.query, ["pdf", "forms"])
                 self.assertEqual(args.source, [])
                 self.assertEqual(args.exclude, [])
-                self.assertEqual(args.limit, 10)
-                self.assertEqual(args.max_results, 10)
+                self.assertEqual(args.limit, 20)
+                self.assertEqual(args.max_results, 100)
+                self.assertEqual(args.count, 100)
+                self.assertEqual(args.page_size, 25)
 
     def test_explicit_result_count_and_source_filters_remain_available(self):
         with patch("universal_skill_finder.cli._search", return_value=0) as search:
@@ -148,9 +150,13 @@ class SearchDefaultTests(unittest.TestCase):
         self.assertEqual(search.call_args.args, ("pdf forms",))
         self.assertEqual(search.call_args.kwargs["source_ids"], [])
         self.assertEqual(search.call_args.kwargs["exclude_ids"], [])
-        self.assertEqual(search.call_args.kwargs["max_results"], 10)
+        self.assertEqual(search.call_args.kwargs["limit"], 20)
+        self.assertEqual(search.call_args.kwargs["max_results"], 100)
+        self.assertEqual(search.call_args.kwargs["count"], 100)
+        self.assertEqual(search.call_args.kwargs["page_size"], 25)
+        self.assertFalse(search.call_args.kwargs["verify_results"])
         self.assertEqual(adapters["polyskill"].calls, 0)
-        self.assertEqual(len(re.findall(r"^\s*\d+\. ", output.getvalue(), re.MULTILINE)), 10)
+        self.assertEqual(len(re.findall(r"^\s*\d+\. ", output.getvalue(), re.MULTILINE)), 16)
 
     def test_each_result_automatically_includes_link_discovery_source_and_install_choice(self):
         with TemporaryDirectory() as temp:

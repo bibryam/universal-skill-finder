@@ -430,7 +430,7 @@ class PresentationV2Tests(unittest.TestCase):
     def test_help_progress_preview_and_explanation_are_local_deterministic_views(self):
         self.assertIn("$skill:find fill PDF forms", render_help(assistant="codex", invocation="plugin"))
         self.assertIn("Search enabled sources", render_help())
-        self.assertIn("Default: up to 10 results", render_help(format="plain"))
+        self.assertIn("request up to 20 candidates per source", render_help(format="plain"))
         self.assertIn("host truncates or reflows the output", render_help())
         self.assertEqual(render_progress(SimpleNamespace(type="search_started", query="pdf", total=3)), 'Searching 3 selected sources for "pdf"...')
         self.assertEqual(render_progress(SimpleNamespace(type="source_finished", source_id="skillsmp", status="searched", completed=1, total=3, candidate_count=2)), "[1/3] skillsmp: searched; 2 candidates")
@@ -438,7 +438,7 @@ class PresentationV2Tests(unittest.TestCase):
         self.assertIn("Early verified preview", preview)
         self.assertNotIn("#1", preview)
         self.assertEqual(render_preview(SimpleNamespace(type="early_verified", name="bad", link_proof=proof("skill", "inconclusive", "https://example.test/bad"))), "")
-        explanation = render_explanation(SimpleNamespace(ranking_algorithm_version="soft-native-v3"), report().results[0])
+        explanation = render_explanation(SimpleNamespace(ranking_algorithm_version="discovery-70-20-10-v1"), report().results[0])
         self.assertIn("Explain #4", explanation)
 
     def test_source_management_column_order_and_symbols(self):

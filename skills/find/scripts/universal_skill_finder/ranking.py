@@ -1,21 +1,24 @@
-"""Pure, versioned ranking for merged Universal Skill Finder results.
+"""Pure, deterministic ranking for the frozen discovery pool.
 
-This module deliberately consumes recorded occurrence fields only.  In
-particular, it never converts a provider's native order, repository stars, or
-an unknown metric into a cross-source relevance signal.
+The selected policy keeps query relevance dominant while allowing a bounded
+source-local signal and independent-source corroboration to settle useful
+ties. Destination reachability, installation readiness, source completion
+order, and raw cross-source popularity never affect ranking.
 """
 
 from __future__ import annotations
 
 import math
 import re
-from typing import Any, Iterable
+from collections import defaultdict
+from typing import Any, Iterable, Mapping
 
 from .models import RankingRecord
 
 
-ALGORITHM_VERSION = "soft-native-v3"
-CANDIDATE_ID = "training-selected-title-description-adoption-v3"
+ALGORITHM_VERSION = "discovery-70-20-10-v1"
+CANDIDATE_ID = "query-source-corroboration-v1"
+DEFAULT_SOURCE_DEPTH = 20
 
 _TOKEN_RE = re.compile(r"c\+\+|c#|\.net|node\.js|[a-z0-9]+(?:[.#][a-z0-9]+)*", re.IGNORECASE)
 _SEPARATORS_RE = re.compile(r"[\\/_-]+")
@@ -24,9 +27,17 @@ _FAMILY_EQUIVALENTS = {
     "humanizer": "humanize",
     "humanizers": "humanize",
 }
+_METRIC_PRIORITY = {
+    "installs": 0,
+    "downloads": 1,
+    "votes": 2,
+    "bookmarks": 3,
+    "stars": 4,
+}
 
 
 RankTrace = RankingRecord
+OccurrenceKey = tuple[str, str, str]
 
 
 def compatible_tokens(value: object) -> list[str]:
@@ -46,30 +57,6 @@ def word_family(token: str) -> str:
     if len(token) > 3 and token.endswith("s") and not token.endswith("ss"):
         return token[:-1]
     return token
-
-
-def compatible_match_percent(
-    query: str, name: str, description: str = "", path: str = "", repository: str = "",
-) -> int:
-    """Compatible lexical score for retrieval, admission, and diagnostics.
-
-    The final ranking score is still calculated by :func:`rank_results` from a
-    merged occurrence.
-    """
-    query_groups = _query_groups(query)
-    if not query_groups:
-        return 0
-    query_tokens = compatible_tokens(query)
-    available = set()
-    for field in (name, description, path):
-        field_tokens = compatible_tokens(field)
-        available.update(word_family(token) for token in field_tokens)
-        if _compact_phrase_present(query_tokens, field_tokens):
-            available.update(query_groups)
-    score = int(round(100 * len(query_groups & available) / len(query_groups)))
-    if "/" in query and len(query_tokens) == 2 and compatible_tokens(repository) == query_tokens:
-        return 100
-    return score
 
 
 def _query_groups(query: str) -> set[str]:
@@ -94,14 +81,6 @@ def _compact_phrase_present(query_tokens: list[str], field_tokens: list[str]) ->
     return False
 
 
-def _field_groups(value: object, query_groups: set[str], query_tokens: list[str]) -> set[str]:
-    field_tokens = compatible_tokens(value)
-    groups = {word_family(token) for token in field_tokens} & query_groups
-    if _compact_phrase_present(query_tokens, field_tokens):
-        groups.update(query_groups)
-    return groups
-
-
 def _phrase_present(query_tokens: list[str], field_tokens: list[str]) -> bool:
     if not query_tokens:
         return False
@@ -118,170 +97,249 @@ def _phrase_present(query_tokens: list[str], field_tokens: list[str]) -> bool:
     )
 
 
-def _complete_name_equivalent(query_tokens: list[str], name_tokens: list[str]) -> bool:
-    if not query_tokens:
-        return False
-    query_families = [word_family(token) for token in query_tokens]
-    name_families = [word_family(token) for token in name_tokens]
-    return query_families == name_families or (
-        len("".join(query_families)) >= 6 and "".join(query_families) == "".join(name_families)
+def _field_groups(value: object, query_groups: set[str], query_tokens: list[str]) -> set[str]:
+    field_tokens = compatible_tokens(value)
+    groups = {word_family(token) for token in field_tokens} & query_groups
+    if _compact_phrase_present(query_tokens, field_tokens):
+        groups.update(query_groups)
+    return groups
+
+
+def compatible_match_percent(
+    query: str, name: str, description: str = "", path: str = "", repository: str = "",
+) -> int:
+    """Return broad lexical coverage for local catalogue retrieval diagnostics."""
+    query_groups = _query_groups(query)
+    if not query_groups:
+        return 0
+    query_tokens = compatible_tokens(query)
+    available: set[str] = set()
+    for field in (name, description, path):
+        available.update(_field_groups(field, query_groups, query_tokens))
+    score = int(round(100 * len(query_groups & available) / len(query_groups)))
+    if "/" in query and len(query_tokens) == 2 and compatible_tokens(repository) == query_tokens:
+        return 100
+    return score
+
+
+def _coverage(value: object, query_groups: set[str], query_tokens: list[str]) -> float:
+    if not query_groups:
+        return 0.0
+    return len(_field_groups(value, query_groups, query_tokens)) / float(len(query_groups))
+
+
+def _path_and_tags(occurrence: Mapping[str, Any]) -> str:
+    tags = occurrence.get("tags")
+    tag_text = " ".join(item for item in tags if isinstance(item, str)) if isinstance(tags, list) else ""
+    return " ".join(
+        value for value in (occurrence.get("skill_path"), occurrence.get("repository"), tag_text)
+        if isinstance(value, str)
     )
 
 
-def _navigation_identity(query: str, occurrence: dict[str, Any]) -> float:
-    """Recognise an explicit owner/repository navigation query only."""
-    query_parts = compatible_tokens(query)
-    if "/" not in query or len(query_parts) != 2:
-        return 0.0
-    repository = occurrence.get("repository")
-    if not isinstance(repository, str):
-        return 0.0
-    return float(compatible_tokens(repository) == query_parts)
-
-
-def _occurrence_lexical(query: str, occurrence: dict[str, Any]) -> tuple[float, dict[str, Any], bool]:
+def _occurrence_relevance(query: str, occurrence: Mapping[str, Any]) -> tuple[float, dict[str, Any]]:
     query_tokens = compatible_tokens(query)
     query_groups = {word_family(token) for token in query_tokens}
     if not query_groups:
-        return 0.0, {"query_groups": []}, False
-    name_tokens = compatible_tokens(occurrence.get("name"))
-    description_tokens = compatible_tokens(occurrence.get("description"))
-    path_tokens = compatible_tokens(occurrence.get("skill_path"))
-    name_groups = _field_groups(occurrence.get("name"), query_groups, query_tokens)
-    description_groups = _field_groups(occurrence.get("description"), query_groups, query_tokens)
-    path_groups = _field_groups(occurrence.get("skill_path"), query_groups, query_tokens)
-    denominator = float(len(query_groups))
-    name_coverage = len(name_groups) / denominator
-    description_coverage = len(description_groups) / denominator
-    path_coverage = len(path_groups) / denominator
-    phrase = float(_phrase_present(query_tokens, name_tokens))
-    whole_name = float(_complete_name_equivalent(query_tokens, name_tokens))
-    navigation = _navigation_identity(query, occurrence)
-    score = (
-        0.45 * name_coverage
-        + 0.25 * description_coverage
-        + 0.05 * path_coverage
-        + 0.05 * phrase
-        + 0.15 * whole_name
-        + 0.05 * navigation
-    )
-    # This is only a tie-break.  It must be independently present in the
-    # description, not inferred from a title/path match or stitched occurrence.
-    corroborates = bool(whole_name and query_groups <= description_groups)
+        return 0.0, {"query_groups": []}
+    name = occurrence.get("name")
+    description = occurrence.get("description")
+    path_tags = _path_and_tags(occurrence)
+    name_coverage = _coverage(name, query_groups, query_tokens)
+    description_coverage = _coverage(description, query_groups, query_tokens)
+    path_tag_coverage = _coverage(path_tags, query_groups, query_tokens)
+    phrase = float(any(
+        _phrase_present(query_tokens, compatible_tokens(field))
+        for field in (name, description, path_tags)
+    ))
+    score = min(1.0, (
+        0.50 * name_coverage
+        + 0.30 * description_coverage
+        + 0.10 * path_tag_coverage
+        + 0.10 * phrase
+    ))
     return score, {
         "query_groups": sorted(query_groups),
-        "name_groups": sorted(name_groups),
-        "description_groups": sorted(description_groups),
-        "path_groups": sorted(path_groups),
-        "name_coverage": name_coverage,
-        "description_coverage": description_coverage,
-        "path_coverage": path_coverage,
-        "name_phrase": phrase,
-        "whole_name": whole_name,
-        "navigational_identity": navigation,
-    }, corroborates
+        "name_coverage": round(name_coverage, 12),
+        "description_coverage": round(description_coverage, 12),
+        "path_tag_coverage": round(path_tag_coverage, 12),
+        "exact_or_ordered_phrase": bool(phrase),
+    }
 
 
-def _typed_skill_installs(occurrence: dict[str, Any]) -> list[dict[str, Any]]:
-    """Read only skills.sh skill-level install observations.
+def _occurrence_key(occurrence: Mapping[str, Any]) -> OccurrenceKey:
+    return (
+        str(occurrence.get("source_id", "")),
+        str(occurrence.get("native_id", "")),
+        str(occurrence.get("adapter", "")),
+    )
 
-    ``metric_observations`` is the frozen typed model field.  The narrow
-    fallback records the existing skills.sh per-skill ``installs`` field as the
-    same typed observation so schema-v1 cache rows remain replayable.  No other
-    provider, metric, scope, native order, or repository metric is accepted.
-    """
+
+def _primary_skill_metric(occurrence: Mapping[str, Any]) -> tuple[str, float] | None:
     observations = occurrence.get("metric_observations")
-    accepted: list[dict[str, Any]] = []
+    candidates: list[tuple[int, str, float]] = []
     if isinstance(observations, list):
         for observation in observations:
-            if not isinstance(observation, dict):
+            if not isinstance(observation, Mapping) or observation.get("scope") != "skill":
                 continue
+            name = observation.get("name")
             value = observation.get("value")
-            if (
-                observation.get("provider") == "skills-sh"
-                and observation.get("name") == "installs"
-                and observation.get("scope") == "skill"
-                and type(value) in {int, float}
-                and math.isfinite(float(value))
-                and value >= 0
-            ):
-                accepted.append({"value": float(value), "provenance": observation.get("provenance", "source_provided")})
-    if accepted:
-        return accepted
-    metrics = occurrence.get("metrics")
-    value = metrics.get("installs") if isinstance(metrics, dict) else None
-    if occurrence.get("source_id") == "skills-sh" and type(value) in {int, float} and math.isfinite(float(value)) and value >= 0:
-        return [{"value": float(value), "provenance": "schema-v1-skills-sh-skill-listing"}]
-    return []
+            if (not isinstance(name, str) or name not in _METRIC_PRIORITY
+                    or type(value) not in {int, float} or not math.isfinite(float(value)) or value < 0):
+                continue
+            candidates.append((_METRIC_PRIORITY[name], name, float(value)))
+    if not candidates:
+        return None
+    _priority, name, value = min(candidates)
+    return name, value
 
 
-def _adoption(occurrences: Iterable[dict[str, Any]]) -> tuple[float, list[dict[str, Any]]]:
-    # One listing can be duplicated in a merged result.  Count its greatest
-    # observation once, rather than letting duplicate aliases inflate it.
-    observations = [item for occurrence in occurrences for item in _typed_skill_installs(occurrence)]
-    if not observations:
-        return 0.0, []
-    value = max(item["value"] for item in observations)
-    normalized = math.log1p(value) / math.log1p(50_000)
-    evidence = sorted(observations, key=lambda item: (-item["value"], str(item["provenance"])))
-    return min(1.0, normalized), evidence
+def _metric_percentiles(results: Iterable[Any]) -> dict[OccurrenceKey, tuple[float, dict[str, Any]]]:
+    grouped: dict[tuple[str, str], list[tuple[OccurrenceKey, float]]] = defaultdict(list)
+    for result in results:
+        for occurrence in getattr(result, "occurrences", []):
+            if not isinstance(occurrence, Mapping):
+                continue
+            metric = _primary_skill_metric(occurrence)
+            if metric is not None:
+                name, value = metric
+                grouped[(str(occurrence.get("source_id", "")), name)].append((_occurrence_key(occurrence), value))
+    normalized: dict[OccurrenceKey, tuple[float, dict[str, Any]]] = {}
+    for (source_id, name), entries in grouped.items():
+        values = sorted({value for _key, value in entries})
+        for key, value in entries:
+            percentile = 0.5 if len(values) == 1 else values.index(value) / float(len(values) - 1)
+            normalized[key] = (percentile, {
+                "source_id": source_id,
+                "metric": name,
+                "raw_value": value,
+                "source_percentile": round(percentile, 12),
+            })
+    return normalized
 
 
-def rank_result(result: Any, query: str) -> RankTrace:
-    """Score a merged result and return a serializable selected-policy trace."""
+def _requested_depth(occurrence: Mapping[str, Any]) -> int:
+    evidence = occurrence.get("source_evidence")
+    native = evidence.get("native") if isinstance(evidence, Mapping) else None
+    depth = native.get("requested_depth") if isinstance(native, Mapping) else None
+    return depth if type(depth) is int and 1 < depth <= 200 else DEFAULT_SOURCE_DEPTH
+
+
+def _source_signal(
+    occurrence: Mapping[str, Any],
+    metric_percentiles: Mapping[OccurrenceKey, tuple[float, dict[str, Any]]],
+) -> tuple[float, dict[str, Any]]:
+    rank = occurrence.get("native_rank")
+    depth = _requested_depth(occurrence)
+    if type(rank) is int and rank > 0:
+        rank_percentile = max(0.0, min(1.0, (depth - min(rank, depth)) / float(depth - 1)))
+    else:
+        rank_percentile = 0.5
+    metric_percentile, metric_evidence = metric_percentiles.get(
+        _occurrence_key(occurrence),
+        (0.5, {"metric": None, "source_percentile": 0.5, "reason": "no comparable skill-level metric"}),
+    )
+    signal = 0.70 * rank_percentile + 0.30 * metric_percentile
+    return signal, {
+        "source_id": occurrence.get("source_id"),
+        "native_rank": rank,
+        "requested_depth": depth,
+        "rank_percentile": round(rank_percentile, 12),
+        "metric": metric_evidence,
+    }
+
+
+def _source_family(occurrence: Mapping[str, Any]) -> str:
+    adapter = occurrence.get("adapter")
+    if isinstance(adapter, str) and adapter:
+        return adapter.casefold()
+    return str(occurrence.get("source_id", "unknown")).casefold()
+
+
+def _corroboration(occurrences: Iterable[Mapping[str, Any]]) -> tuple[float, list[str]]:
+    families = sorted({_source_family(occurrence) for occurrence in occurrences})
+    score = 0.0 if len(families) <= 1 else 0.5 if len(families) == 2 else 1.0
+    return score, families
+
+
+def rank_result(
+    result: Any,
+    query: str,
+    metric_percentiles: Mapping[OccurrenceKey, tuple[float, dict[str, Any]]] | None = None,
+) -> RankTrace:
+    """Score one merged result using one coherent lexical occurrence."""
     raw_occurrences = getattr(result, "occurrences", [])
-    occurrences = [item for item in raw_occurrences if isinstance(item, dict)]
+    occurrences = [item for item in raw_occurrences if isinstance(item, Mapping)]
     if not occurrences:
         occurrences = [{
             "name": getattr(result, "name", ""),
             "description": getattr(result, "description", ""),
             "skill_path": getattr(result, "skill_path", ""),
             "repository": getattr(result, "repository", ""),
-            "source_id": None,
-            "metrics": {},
+            "source_id": "",
+            "native_id": getattr(result, "id", ""),
+            "adapter": "",
+            "native_rank": 0,
         }]
-    scored = []
-    for occurrence in occurrences:
-        lexical, evidence, corroborates = _occurrence_lexical(query, occurrence)
-        scored.append((lexical, corroborates, occurrence, evidence))
-    # One coherent occurrence supplies all lexical evidence.  Stable fields keep
-    # replay ordering independent of arrival timing.
-    lexical, corroborates, occurrence, lexical_evidence = max(
-        scored,
-        key=lambda item: (item[0], item[1], str(item[2].get("name", "")).casefold(), str(item[2].get("native_id", ""))),
+    lexical_rows = [(*_occurrence_relevance(query, occurrence), occurrence) for occurrence in occurrences]
+    relevance, relevance_evidence, lexical_occurrence = max(
+        lexical_rows,
+        key=lambda item: (
+            item[0],
+            int(bool(item[1].get("exact_or_ordered_phrase"))),
+            str(item[2].get("name", "")).casefold(),
+            str(item[2].get("native_id", "")),
+        ),
     )
-    adoption, adoption_evidence = _adoption(occurrences)
-    score = lexical + 0.10 * adoption
+    percentiles = metric_percentiles or {}
+    source_rows = [(*_source_signal(occurrence, percentiles), occurrence) for occurrence in occurrences]
+    source_signal, source_evidence, _source_occurrence = max(
+        source_rows,
+        key=lambda item: (item[0], str(item[2].get("source_id", "")), str(item[2].get("native_id", ""))),
+    )
+    corroboration, families = _corroboration(occurrences)
+    score = 0.70 * relevance + 0.20 * source_signal + 0.10 * corroboration
     return RankingRecord(
         algorithm_version=ALGORITHM_VERSION,
         candidate_id=CANDIDATE_ID,
         score=round(score, 12),
-        components={"lexical": round(lexical, 12), "skill_adoption": round(0.10 * adoption, 12)},
+        components={
+            "query_relevance": round(relevance, 12),
+            "source_signal": round(source_signal, 12),
+            "corroboration": round(corroboration, 12),
+        },
         tie_breaks={
-            "description_corroboration": bool(corroborates),
+            "exact_or_ordered_phrase": bool(relevance_evidence.get("exact_or_ordered_phrase")),
             "name": str(getattr(result, "name", "")).casefold(),
             "identity": str(getattr(result, "id", "")),
         },
         evidence={
-            "lexical_occurrence": {
-                "source_id": occurrence.get("source_id"),
-                "native_id": occurrence.get("native_id"),
-                **lexical_evidence,
+            "weights": {"query_relevance": 0.70, "source_signal": 0.20, "corroboration": 0.10},
+            "relevance_occurrence": {
+                "source_id": lexical_occurrence.get("source_id"),
+                "native_id": lexical_occurrence.get("native_id"),
+                **relevance_evidence,
             },
-            "skills_sh_skill_installs": adoption_evidence,
-            "excluded": ["native_rank", "repository_stars", "skillsmp_order", "unknown_native_order"],
+            "source_signal": source_evidence,
+            "source_families": families,
+            "excluded": ["destination_status", "installation_readiness", "completion_order", "cross_source_raw_metrics"],
         },
     )
 
 
 def rank_results(results: Iterable[Any], query: str) -> list[tuple[Any, RankTrace]]:
-    """Return selected-policy order and traces, without mutating presentation data."""
-    pairs = [(result, rank_result(result, query)) for result in results]
+    """Return stable discovery order and traces without mutating presentation data."""
+    materialized = list(results)
+    percentiles = _metric_percentiles(materialized)
+    pairs = [(result, rank_result(result, query, percentiles)) for result in materialized]
     return sorted(
         pairs,
         key=lambda item: (
             -item[1].score,
-            -int(bool(item[1].tie_breaks["description_corroboration"])),
+            -item[1].components["query_relevance"],
+            -int(bool(item[1].tie_breaks["exact_or_ordered_phrase"])),
+            -item[1].components["source_signal"],
+            -item[1].components["corroboration"],
             item[1].tie_breaks["name"],
             item[1].tie_breaks["identity"],
         ),

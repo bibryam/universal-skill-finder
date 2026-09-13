@@ -10,6 +10,7 @@ from urllib.parse import quote, unquote, urlparse
 
 from .models import Coverage, Result, SearchReport, UNSAFE_LOCATION_WARNING
 from .text import clean_text, parse_github_repository, safe_skill_path, safe_web_url
+from .validation import reviewed_destination
 
 ASSISTANTS = {"codex": "Codex", "claude-code": "Claude Code"}
 SKILLS_CLI_VERSION = "1.5.23"
@@ -875,7 +876,7 @@ def _coverage_table(report: object) -> list[str]:
         lines.extend([
             "",
             "The Candidates in pool column is the bounded number this source contributed, not the source's total matches. "
-            "Globally shown counts unique results on this page after merging, global ranking, and destination verification; "
+            "Globally shown counts unique results on this page after merging and global ranking; "
             "merged results can count for multiple sources, so this column is not additive.",
         ])
     return lines
@@ -1143,16 +1144,154 @@ def _offline_previews(report: object) -> list[str]:
     return lines
 
 
+def _reviewed_discovery_url(result: object) -> str | None:
+    """Select a code-reviewed browse route without treating it as live proof."""
+    links = _items(_value(result, "browse_links", []))
+    for link in links:
+        if _value(link, "status") != "discoverable":
+            continue
+        url = _navigation_url(_value(link, "url"))
+        role = str(_value(link, "role", ""))
+        method = _value(link, "method")
+        if not url:
+            continue
+        if method == "connector_reviewed_route":
+            adapter = str(_value(link, "adapter", ""))
+            if reviewed_destination(
+                "render", role=role, url=url, adapter=adapter, expected_identity=None,
+            ).profile is not None:
+                return url
+        if method != "normalized_github_identity":
+            continue
+        repository = parse_github_repository(_value(result, "repository"))
+        if role == "skill_destination":
+            path = safe_skill_path(_value(result, "skill_path"))
+            ref = _value(result, "ref")
+            if repository and path and isinstance(ref, str) and _github_tree_identity(url) == (repository, ref, path):
+                return url
+        elif role == "repository" and repository and parse_github_repository(url) == repository:
+            return url
+    return None
+
+
+def _discovery_path(result: object) -> str:
+    repository = parse_github_repository(_value(result, "repository"))
+    path = safe_skill_path(_value(result, "skill_path"))
+    if repository and path and path != ".":
+        return f"{repository}/{path}"
+    if repository:
+        return repository
+    publisher = _text(_value(result, "publisher", ""), 100)
+    name = _text(_value(result, "name", "unnamed skill"), 160)
+    return f"{publisher}/{name}" if publisher else name
+
+
+def _short_count(value: int) -> str:
+    if value < 1_000:
+        return str(value)
+    if value < 1_000_000:
+        return f"{value / 1_000:.1f}K".replace(".0K", "K")
+    return f"{value / 1_000_000:.1f}M".replace(".0M", "M")
+
+
+def _primary_metric_text(result: object) -> str | None:
+    priority = (
+        ("installs", "installs"), ("downloads", "downloads"),
+        ("votes", "votes"), ("bookmarks", "bookmarks"),
+        ("stars", "stars"), ("github_stars", "repository stars"),
+    )
+    choices: list[tuple[int, int, str, str]] = []
+    for source_id, metrics in _metric_entries(result):
+        for index, (key, label) in enumerate(priority):
+            value = _count(metrics.get(key))
+            if value is not None:
+                # Prefer one easy-to-scan source-native signal. The source is
+                # already shown immediately before it, so repeating the label
+                # here wastes the compact line.
+                choices.append((index, -value, source_id, f"{_short_count(value)} {label}"))
+                break
+    if not choices:
+        return None
+    _priority, _descending_value, _source_id, metric = min(choices)
+    return metric
+
+
+def _discovery_sources(result: object) -> str:
+    sources = sorted({str(value) for value in _items(_value(result, "source_ids", [])) if value})
+    if not sources:
+        return "Source unavailable"
+    if len(sources) <= 3:
+        return " + ".join(cell(source, 120) for source in sources)
+    return " + ".join(cell(source, 120) for source in sources[:3]) + f" +{len(sources) - 3}"
+
+
+def _render_discovery_report(report: object, *, format: str) -> str:
+    results = _items(_value(report, "results", []))
+    summary = _summary_data(report, results)
+    query = _text(_value(report, "query", ""), 400)
+    start = int(_value(report, "page_start", 1) or 1)
+    current = int(summary["current"])
+    end = start + current - 1 if current else 0
+    visible_range = f"showing {start}–{end}" if current else "showing 0"
+    completed_sources = int(summary["searched"]) + int(summary["cached"])
+    source_label = "source completed" if completed_sources == 1 else "sources completed"
+    candidate_label = "unique candidate" if int(summary["unique"]) == 1 else "unique candidates"
+    lines = [
+        "## Universal Skill Finder", "", f"Search: **{query}**", "",
+        f"**{summary['unique']} {candidate_label}** · **{completed_sources} {source_label}** · "
+        f"**{visible_range}** · sorted by 70/20/10 score",
+    ]
+    if summary["failed"] or summary["partial_sources"]:
+        lines.extend(["", "Partial coverage: some enabled sources failed or returned incomplete results. Use **Search details** for the breakdown."])
+    lines.append("")
+    for fallback, result in enumerate(results, start):
+        number = _number(result, fallback)
+        name = _text(_value(result, "name", "unnamed skill"), 160)
+        url = _reviewed_discovery_url(result)
+        heading = _link(name, url) if url else cell(name, 160)
+        path = cell(_discovery_path(result), 400)
+        description = _text(_value(result, "description", ""), 180) or "Description not supplied by source."
+        facts = [_discovery_sources(result)]
+        metric = _primary_metric_text(result)
+        if metric:
+            facts.append(metric)
+        facts.append(description)
+        lines.extend([
+            f"{number}. {heading} · {path}",
+            "   " + " · ".join(facts),
+        ])
+        local = installed_label(result)
+        if local:
+            lines.append("   Local: " + _text(local, 200))
+    if not results:
+        lines.append(_empty_results_message(report, list(summary["coverage"])).replace("verified ", ""))
+    snapshot = _value(report, "snapshot", {})
+    if _value(snapshot, "status") == "saved":
+        actions = ["**Inspect #N**", "**Explain #N**"]
+        continuation = _value(report, "continuation", {})
+        if _value(continuation, "available", False):
+            actions.append("**Next page**")
+        actions.extend(["**Show all**", "**Search deeper**", "**Search details**"])
+        lines.extend(["", "Next: " + " · ".join(actions)])
+    else:
+        lines.extend([
+            "", "Next: **Search deeper**",
+            "Save with `--report-json` to use Inspect, Explain, paging, Show all, or Search details.",
+        ])
+    lines.extend(_footer(report))
+    return _plain(lines) if format == "plain" else "\n".join(lines)
+
+
 def render_report(report: object, *, assistant: str | None = None, format: str = "markdown", dry_run: bool = False) -> str:
-    """Render a trusted schema-2 report from already selected, validated evidence.
+    """Render a trusted schema-2 report from normalized result evidence.
 
     ``report`` may be a live ``SearchReport`` or its serialized JSON-shaped
     mapping, but mappings must come from the report pipeline or from snapshot
-    materialization after its proof-demotion/validation boundary. Rendering is
-    deliberately not a validator: it performs no I/O, wall-clock freshness
-    decision, or source-origin authentication. It renders already checked proof
-    roles plus the fixed application-owned project URL, and keeps all other
-    URL-like source text inert.
+    materialization. Rendering is deliberately not a validator: it performs no
+    I/O, wall-clock freshness decision, or source-origin authentication.
+    Discovery links must survive the connector-owned route review again before
+    they become active; exact inspection and installation still require fresh
+    destination proof. All other URL-like source text remains inert.
     """
     if format not in {"markdown", "plain", "html"}:
         raise ValueError("format must be markdown, plain, or html")
@@ -1168,6 +1307,8 @@ def render_report(report: object, *, assistant: str | None = None, format: str =
         if _coverage_rows(report):
             lines.extend(["", *_coverage_table(report)])
         return _plain(lines) if format == "plain" else "\n".join(lines)
+    if _value(report, "discovery_mode", False) is True and format != "html":
+        return _render_discovery_report(report, format=format)
     mode = str(_value(report, "mode", "online"))
     results = _items(_value(report, "results", []))
     if mode == "offline_preview":
@@ -1480,7 +1621,7 @@ def render_help(*, assistant: str | None = None, invocation: str = "unknown", fo
         raise ValueError("format must be markdown or plain")
     prefix = {"plugin": "$skill:find" if assistant == "codex" else "/skill:find", "standalone": "$find" if assistant == "codex" else "/find", "cli": "skill-find"}.get(invocation, "Find a skill to")
     examples = ([f"{prefix} fill PDF forms", f"{prefix} humanizer", f"{prefix} React performance --count 3", f"{prefix} database migration --source tessl", f"{prefix} list sources"] if invocation != "unknown" else ["Find a skill to fill PDF forms", "Find a skill named humanizer", "Show 3 skills for React performance", "Find a database migration skill from Tessl", "List sources"])
-    lines = ["## Universal Skill Finder", "", "Find, inspect and install verified skills.", "Search enabled sources for a task or skill name.", "", "Examples:", *[f"- {item}" for item in examples], "", "Default: up to 10 results, 10 per page. Choose an overall 1–100 with --count N or -n N; use --page-size N for the page size, or ask for “3 skills for PDF forms.”", "", "Inspect #N / Install #N after a search; Explain #N and Next page need its saved snapshot. Show more can extend the same snapshot up to 100.", "", "Pages are bounded. If a host truncates or reflows the output, relay the saved page artifact; host rendering is outside Universal Skill Finder's control."]
+    lines = ["## Universal Skill Finder", "", "Search enabled sources and compare skills.", "Results are discovery links; inspect a result before installation.", "", "Examples:", *[f"- {item}" for item in examples], "", "Default: request up to 20 candidates per source, retain up to 100 overall, and show 25 per page. Use --count N or -n N for the overall cap and --page-size N for the page size.", "", "Next page reads the frozen ranked pool without another search or destination check. Inspect #N checks one destination live. Explain #N shows its 70/20/10 ranking inputs. Search deeper starts a new search with a larger per-source depth and may change the ranking.", "", "If a host truncates or reflows the output, relay the saved page artifact; host rendering is outside Universal Skill Finder's control."]
     return _plain(lines) if format == "plain" else "\n".join(lines)
 
 
@@ -1497,9 +1638,11 @@ def render_progress(event: object, *, format: str = "plain") -> str:
         count = _value(event, "candidate_count")
         suffix = f"; {count} candidates" if type(count) is int else ""
         return f"[{completed}/{total}] {source}: {status}{suffix}"
-    if kind == "ranking_started": return "Merging candidates and ranking unique skills..."
-    if kind in {"validation_started", "page_started"}: return "Checking skill destinations for this page..."
-    if kind in {"validation_progress", "validation_finished", "page_finished"}: return f"[{completed}/{total}] verified destinations" if type(completed) is int and type(total) is int else "Destination checks complete."
+    if kind == "ranking_started": return "Normalizing, deduplicating and ranking the retrieved pool..."
+    if kind == "page_started": return "Loading the next saved ranked page..."
+    if kind == "page_finished": return f"Page ready; {completed} results." if type(completed) is int else "Page ready."
+    if kind == "validation_started": return "Checking skill destinations for this page..."
+    if kind in {"validation_progress", "validation_finished"}: return f"[{completed}/{total}] verified destinations" if type(completed) is int and type(total) is int else "Destination checks complete."
     if kind == "inventory_started": return "Checking installed skills..."
     if kind == "search_finished": return "Search complete."
     return ""
@@ -1524,9 +1667,112 @@ def render_explanation(snapshot: object, result: object, *, format: str = "markd
         raise ValueError("format must be markdown or plain")
     number = _number(result, 0)
     ranking = _value(result, "ranking", _value(result, "ranking_record"))
-    validation = _value(result, "validation", _value(result, "target_proof"))
-    lines = [f"## Explain #{number}", "", f"Skill: {_text(_value(result, 'name', 'unknown'), 160)}", f"Algorithm: {_text(_value(ranking, 'algorithm_version', _value(snapshot, 'ranking_algorithm_version', 'unavailable')), 120)}", f"Validation: {_text(_value(validation, 'status', 'unavailable'), 120)}"]
+    score = _value(ranking, "score")
+    score_text = f"{100 * float(score):.1f}%" if type(score) in {int, float} and math.isfinite(float(score)) else "unavailable"
+    lines = [
+        f"## Explain #{number}", "",
+        f"Skill: {_text(_value(result, 'name', 'unknown'), 160)}",
+        f"Rank score: {score_text}",
+        f"Algorithm: {_text(_value(ranking, 'algorithm_version', _value(snapshot, 'ranking_algorithm_version', 'unavailable')), 120)}",
+    ]
     components = _value(ranking, "components", {})
-    if isinstance(components, dict) and components:
-        lines.extend(["", "Evidence:"] + [f"- {cell(key, 80)}: {_text(value, 120)}" for key, value in sorted(components.items())])
+    if isinstance(components, Mapping) and components:
+        labels = (
+            ("query_relevance", "Query relevance", 70),
+            ("source_signal", "Source-local signal", 20),
+            ("corroboration", "Independent-source corroboration", 10),
+        )
+        lines.extend(["", "Components:"])
+        if any(key in components for key, _label, _weight in labels):
+            for key, label, weight in labels:
+                value = components.get(key)
+                value_text = (
+                    f"{100 * float(value):.1f}%"
+                    if type(value) in {int, float} and math.isfinite(float(value)) else "unavailable"
+                )
+                lines.append(f"- {label}: {value_text} · weight {weight}%")
+        else:
+            lines.extend(
+                f"- {cell(str(key), 80)}: {_text(value, 120)}"
+                for key, value in sorted(components.items())
+            )
+    lines.extend([
+        "", "Destination reachability and installation readiness do not affect ranking. Use **Inspect #N** for a live check.",
+    ])
+    return _plain(lines) if format == "plain" else "\n".join(lines)
+
+
+def render_inspection(
+    result: object,
+    outcome: object,
+    *,
+    assistant: str | None = None,
+    format: str = "markdown",
+) -> str:
+    """Render one on-demand destination check with full result detail."""
+    if format not in {"markdown", "plain"}:
+        raise ValueError("format must be markdown or plain")
+    number = _number(result, 0)
+    name = _text(_value(result, "name", "unnamed skill"), 160)
+    checked = _proof_for(
+        result, _SKILL_BROWSE_ROLES | _LISTING_ROLES | {"repository"}, accepted=_CHECKED,
+    )
+    url = _proof_url(checked, accepted=_CHECKED) if checked else _reviewed_discovery_url(result)
+    title = _link(name, url) if url else cell(name, 160)
+    status = _text(_value(outcome, "status", "not_checked"), 80).replace("_", " ")
+    description = _text(_value(result, "description", ""), 800) or "Description not supplied by source."
+    lines = [
+        f"## Inspect #{number}", "", f"### {title}", "", description, "",
+        f"**Reported path:** {cell(_discovery_path(result), 500)}  ",
+        f"**Found on:** {_discovery_sources(result)}  ",
+        f"**Signals:** {_canonical_compact_text(metrics_text(result))}  ",
+        f"**Destination check:** {cell(status, 80)}",
+    ]
+    detail = _value(outcome, "detail")
+    if detail:
+        lines[-1] += f" · {_text(detail, 300)}"
+    resolved = _compact_resolved_target(result)
+    if resolved:
+        lines.extend(["", resolved])
+    warnings = [_text(value, 260) for value in _items(_value(result, "warnings", []))]
+    if warnings:
+        lines.extend(["", "Warnings:", *[f"- {warning}" for warning in warnings]])
+    command, reason = _install_v2(result, assistant)
+    lines.extend(["", (
+        f"Installation is available through **Install #{number}** after review and approval."
+        if command else f"Installation is not ready: {_text(reason, 220)}."
+    )])
+    return _plain(lines) if format == "plain" else "\n".join(lines)
+
+
+def render_search_details(snapshot: object, *, format: str = "markdown") -> str:
+    """Render the diagnostics intentionally omitted from compact discovery pages."""
+    if format not in {"markdown", "plain"}:
+        raise ValueError("format must be markdown or plain")
+    metadata = _value(snapshot, "report_metadata", {})
+    if not isinstance(metadata, Mapping):
+        metadata = {}
+    coverage = _value(metadata, "coverage", [])
+    if not isinstance(coverage, (list, tuple)):
+        coverage = []
+    ordered = _items(_value(snapshot, "ordered_pool", []))
+    depth = _value(_value(snapshot, "options", {}), "depth", 20)
+    accepted = _value(metadata, "accepted_occurrences", len(ordered))
+    lines = [
+        "## Search details", "", f"Search: **{_text(_value(snapshot, 'query', ''), 400)}**", "",
+        f"- Retrieved candidates: {accepted}",
+        f"- Unique candidates: {len(ordered)}",
+        f"- Requested depth: up to {depth} per source",
+        "- Ranking: 70% query relevance · 20% source-local signal · 10% independent-source corroboration",
+        "- Ranking pool: frozen; paging does not rerun or reorder the search",
+        "- Destination checks: deferred until **Inspect #N**",
+    ]
+    notes = _value(metadata, "notes", [])
+    if isinstance(notes, (list, tuple)):
+        lines.extend(f"- {_text(note, 300)}" for note in notes if isinstance(note, str))
+    detail_report = {
+        "coverage": list(coverage),
+        "mode": _value(metadata, "mode", "online"),
+    }
+    lines.extend(["", *_coverage_table(detail_report)])
     return _plain(lines) if format == "plain" else "\n".join(lines)

@@ -288,6 +288,7 @@ class Result:
     link_proofs: list[dict[str, Any]] = field(default_factory=list)
     target_proof: dict[str, Any] = field(default_factory=dict)
     attributions: list[dict[str, Any]] = field(default_factory=list)
+    browse_links: list[dict[str, Any]] = field(default_factory=list)
     validation_status: str = "not_checked"
     result_number: int | None = None
 
@@ -305,6 +306,7 @@ class SearchReport:
     provenance: dict[str, Any] = field(default_factory=release_metadata)
     installed_scan: dict[str, Any] = field(default_factory=dict)
     mode: str = "online"
+    discovery_mode: bool = False
     report_format_version: int = REPORT_FORMAT_VERSION
     requested_count: int = 10
     page_size: int = 10
@@ -338,6 +340,7 @@ class SearchReport:
             "schema_version": SEARCH_REPORT_SCHEMA_VERSION,
             "report_format_version": self.report_format_version,
             "mode": self.mode,
+            "discovery_mode": self.discovery_mode,
             "query": self.query,
             "generated_at": self.generated_at,
             "configuration_path": self.configuration_path,

@@ -32,7 +32,8 @@ from .text import clean_text, occurrence_aliases, safe_skill_path, stable_result
 from .versioning import ADAPTER_CONTRACT_VERSION, effective_config_revision, release_metadata
 from .validation import (
     AnonymousPublicTransport, Destination, TargetResolutionCache, github_skill_destination,
-    public_resolver, reviewed_destination, skillhub_destination, validate_destination, validate_ranked,
+    github_repository_destination, public_resolver, reviewed_destination, skillhub_destination,
+    validate_destination, validate_ranked,
 )
 
 TRUST_PRIORITY = {
@@ -243,8 +244,28 @@ class UniversalSkillFinder:
     @staticmethod
     def _result_relevance_admissible(result: Result) -> bool:
         """Defend the frozen pool even if a connector bypassed source admission."""
-        lexical = result.ranking.get("components", {}).get("lexical")
+        components = result.ranking.get("components", {})
+        lexical = components.get("query_relevance", components.get("lexical"))
         return type(lexical) in {int, float} and lexical > 0
+
+    @staticmethod
+    def _discovery_admissible(candidate: Candidate, query: str) -> bool:
+        """Trust provider retrieval while retaining lexical local-catalogue bounds."""
+        spec = ADAPTER_SPECS.get(candidate.adapter)
+        if spec is None:
+            return False
+        return spec.relevance_basis == "provider_query" or UniversalSkillFinder._relevance_admissible(
+            candidate, query,
+        )
+
+    @staticmethod
+    def _record_requested_depth(candidate: Candidate, depth: int) -> None:
+        """Freeze the source depth used to normalize native rank during replay."""
+        evidence = dict(candidate.source_evidence) if isinstance(candidate.source_evidence, dict) else {}
+        native = dict(evidence.get("native", {})) if isinstance(evidence.get("native"), dict) else {}
+        native["requested_depth"] = depth
+        evidence["native"] = native
+        candidate.source_evidence = evidence
 
     @staticmethod
     def _host(source: dict[str, Any]) -> str | None:
@@ -771,6 +792,7 @@ class UniversalSkillFinder:
         thorough: bool = False,
         progress_callback: Any = None,
         preview: bool = False,
+        verify_results: bool = True,
     ) -> SearchReport:
         started_at = time.monotonic()
         query = clean_text(query, 500)
@@ -782,6 +804,8 @@ class UniversalSkillFinder:
             raise ConfigurationError("count must be an integer from 1 to 100")
         if type(page_size) is not int or not 1 <= page_size <= 100:
             raise ConfigurationError("page_size must be an integer from 1 to 100")
+        if type(verify_results) is not bool:
+            raise ConfigurationError("verify_results must be a boolean")
         requested_count = count if count is not None else max_results
         # Schema 2 deliberately interprets legacy max_results as the overall
         # snapshot cap. It never bypasses the separately bounded page size.
@@ -830,7 +854,7 @@ class UniversalSkillFinder:
         # Provisional proof scheduling is independent of preview visibility.
         # `--preview` changes only whether eligible evidence is emitted.
         provisional_enabled = bool(
-            not offline and not dry_run and self.validation_transport is not None
+            verify_results and not offline and not dry_run and self.validation_transport is not None
         )
         preview_candidates: list[Candidate] = []
         preview_attempted: set[str] = set()
@@ -1023,9 +1047,14 @@ class UniversalSkillFinder:
                                 coverage: Coverage | None, failure: Exception | None = None) -> None:
                 nonlocal finished_sources
                 if failure is None and candidates is not None and coverage is not None:
+                    for candidate in candidates:
+                        self._record_requested_depth(candidate, limit)
                     candidates = [
                         candidate for candidate in candidates
-                        if self._relevance_admissible(candidate, query)
+                        if (
+                            self._relevance_admissible(candidate, query)
+                            if verify_results else self._discovery_admissible(candidate, query)
+                        )
                     ]
                     coverage.result_count = len(candidates)
                     if supervisor.publish(source["id"], (candidates, coverage)):
@@ -1259,17 +1288,21 @@ class UniversalSkillFinder:
         emit_progress(progress_callback, ProgressEvent(
             "ranking_started", query=query, completed=len(candidates), total=len(candidates), status="started",
         ))
-        ranked_pool = [
-            item for item in self._merge(candidates, query)
-            if self._result_relevance_admissible(item)
-        ]
+        merged_pool = self._merge(candidates, query)
+        ranked_pool = (
+            [item for item in merged_pool if self._result_relevance_admissible(item)]
+            if verify_results else merged_pool
+        )
         ranking_elapsed_ms = int((time.monotonic() - ranking_started_at) * 1000)
         validation_started_at = time.monotonic()
-        emit_progress(progress_callback, ProgressEvent(
-            "validation_started", query=query, completed=0, total=len(ranked_pool), status="not_checked",
-        ))
-        validation_run = _ValidationRun()
-        if not offline and not dry_run:
+        validation_run = _ValidationRun(
+            deferred_count=len(ranked_pool), stop_reason="deferred_to_inspect",
+        )
+        if verify_results:
+            emit_progress(progress_callback, ProgressEvent(
+                "validation_started", query=query, completed=0, total=len(ranked_pool), status="not_checked",
+            ))
+        if verify_results and not offline and not dry_run:
             validation_outcome = self._validate_ranked_pool(
                 ranked_pool, deadline, policy, budget=validation_budget, permits=validation_permits,
                 validation_deadline=final_validation_deadline,
@@ -1286,17 +1319,22 @@ class UniversalSkillFinder:
         for item in ranked_pool:
             item.validation_status = self._validation_status(item)
             partitions[item.validation_status].append(item)
-        # Replenishment is a stable filter over the single frozen ranked pool:
-        # an unavailable or unchecked identity never occupies a normal card.
-        materialized = partitions["eligible"][:display_cap]
+        # Discovery publishes the ranked slice directly. The legacy verified
+        # mode remains available to embedders, but the CLI defers destination
+        # checks to an explicit Inspect action.
+        materialized = (
+            partitions["eligible"][:display_cap]
+            if verify_results else ranked_pool[:display_cap]
+        )
         for number, item in enumerate(materialized, 1):
             item.result_number = number
         validation_elapsed_ms = int((time.monotonic() - validation_started_at) * 1000)
-        emit_progress(progress_callback, ProgressEvent(
-            "validation_finished", query=query, completed=len(materialized), total=len(ranked_pool),
-            status="eligible" if materialized else "not_checked",
-            elapsed_ms=validation_elapsed_ms,
-        ))
+        if verify_results:
+            emit_progress(progress_callback, ProgressEvent(
+                "validation_finished", query=query, completed=len(materialized), total=len(ranked_pool),
+                status="eligible" if materialized else "not_checked",
+                elapsed_ms=validation_elapsed_ms,
+            ))
         if offline:
             results: list[Result] = []
             candidate_previews = [self._candidate_preview(item, offline=True) for item in ranked_pool[:3]]
@@ -1331,6 +1369,7 @@ class UniversalSkillFinder:
                 ),
             },
             mode="offline_preview" if offline else "dry_run" if dry_run else "online",
+            discovery_mode=not verify_results,
             requested_count=requested_count,
             page_size=page_size,
             accepted_occurrences=len(candidates),
@@ -1343,7 +1382,7 @@ class UniversalSkillFinder:
             validation_deferred_count=validation_run.deferred_count,
             validation_stop_reason=validation_run.stop_reason,
             validation_stopped_reason=validation_run.stopped_reason,
-            page_incomplete=(
+            page_incomplete=verify_results and (
                 0 < len(results) < display_cap
                 and validation_run.stopped_reason is not None
             ),
@@ -1357,6 +1396,7 @@ class UniversalSkillFinder:
                 "reason": "pass --report-json to save this frozen pool",
                 "ordered_pool_size": len(ranked_pool),
                 "ranking_algorithm": ranked_pool[0].ranking.get("algorithm_version") if ranked_pool else None,
+                "discovery_mode": not verify_results,
                 "ordered_pool": [item.id for item in ranked_pool],
                 "result_records": {item.id: item.to_dict() for item in ranked_pool},
                 "ranking_traces": {item.id: dict(item.ranking) for item in ranked_pool},
@@ -1381,7 +1421,7 @@ class UniversalSkillFinder:
                 "request_budget": validation_budget.snapshot(),
                 "provisional_request_budget": provisional_budget.snapshot(),
             },
-            notes=(self._verification_notes(ordered_coverage, ranked_pool) + (
+            notes=(self._verification_notes(ordered_coverage, ranked_pool if verify_results else []) + (
                 ["An optional early destination check did not complete; only final eligible results are shown."]
                 if preview_failures else []
             )) if not offline and not dry_run else [],
@@ -1706,6 +1746,84 @@ class UniversalSkillFinder:
             return "inconclusive" if "not_checked" in statuses else "unavailable"
         return "not_checked"
 
+    @staticmethod
+    def _discovery_browse_links(occurrences: list[Candidate]) -> list[dict[str, Any]]:
+        """Return connector-reviewed navigation routes without claiming liveness.
+
+        These links are safe discovery affordances, not destination or install
+        proof. Only code-owned provider routes and normalized GitHub identities
+        can enter this field.
+        """
+        links: list[dict[str, Any]] = []
+        seen: set[tuple[str, str, str]] = set()
+
+        def add(item: Candidate, role: str, url: str, method: str) -> None:
+            key = (item.source_id, role, url)
+            if key in seen:
+                return
+            seen.add(key)
+            links.append({
+                "source_id": item.source_id,
+                "label": item.source_id,
+                "adapter": item.adapter,
+                "role": role,
+                "url": url,
+                "status": "discoverable",
+                "method": method,
+                "native_rank": item.native_rank,
+            })
+
+        ordered = sorted(
+            occurrences,
+            key=lambda item: (max(1, item.native_rank), item.source_id, item.native_id),
+        )
+        for item in ordered:
+            if item.listing_url and item.listing_role in {
+                "listing", "bundle_listing", "source_page", "repository",
+            }:
+                destination = reviewed_destination(
+                    "discovery", role=item.listing_role, url=item.listing_url,
+                    adapter=item.adapter,
+                    expected_identity=item.source_evidence.get("expected_identity")
+                    if isinstance(item.source_evidence, dict) else None,
+                )
+                if destination.profile is not None and destination.url:
+                    add(item, item.listing_role, destination.url, "connector_reviewed_route")
+            if item.repository and item.ref and item.skill_path:
+                try:
+                    destination = github_skill_destination(
+                        "discovery", repository=item.repository, ref=item.ref,
+                        skill_path=item.skill_path,
+                    )
+                except ValueError:
+                    pass
+                else:
+                    if destination.url:
+                        add(item, "skill_destination", destination.url, "normalized_github_identity")
+            elif item.repository:
+                try:
+                    destination = github_repository_destination(
+                        "discovery", repository=item.repository,
+                    )
+                except ValueError:
+                    pass
+                else:
+                    if destination.url:
+                        add(item, "repository", destination.url, "normalized_github_identity")
+        role_priority = {
+            "listing": 0, "source_page": 1, "bundle_listing": 2,
+            "skill_destination": 3, "repository": 4,
+        }
+        return sorted(
+            links,
+            key=lambda item: (
+                role_priority.get(str(item.get("role")), 99),
+                int(item.get("native_rank", 1_000_000)),
+                str(item.get("source_id", "")),
+                str(item.get("url", "")),
+            ),
+        )[:20]
+
     def _merge(self, candidates: list[Candidate], query: str) -> list[Result]:
         candidates = sorted(candidates, key=lambda item: json.dumps(item.to_dict(), sort_keys=True, ensure_ascii=True))
         parent = list(range(len(candidates)))
@@ -1822,6 +1940,7 @@ class UniversalSkillFinder:
                 link_proofs=[proofs_by_key[key] for key in sorted(proofs_by_key)],
                 target_proof=dict(target_proof),
                 attributions=[attributions_by_key[key] for key in sorted(attributions_by_key)],
+                browse_links=self._discovery_browse_links(occurrences),
             ))
         ranked = rank_results(results, query)
         for result, trace in ranked:
