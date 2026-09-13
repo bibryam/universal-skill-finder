@@ -153,6 +153,31 @@ def _child_summary(raw: str, source_id: str) -> tuple[str, int, str, int, int, i
     return None
 
 
+def _valid_discovery_result_envelope(document: object) -> bool:
+    """Check the public discovery contract without reintroducing proof gating."""
+    if not isinstance(document, Mapping) or document.get("discovery_mode") is not True:
+        return False
+    results = document.get("results")
+    if not isinstance(results, list):
+        return False
+    allowed_statuses = {"eligible", "unavailable", "inconclusive", "not_checked"}
+    component_names = {"query_relevance", "source_signal", "corroboration"}
+    for item in results:
+        if (not isinstance(item, Mapping)
+                or not isinstance(item.get("id"), str) or not item["id"]
+                or item.get("validation_status") not in allowed_statuses):
+            return False
+        ranking = item.get("ranking")
+        components = ranking.get("components") if isinstance(ranking, Mapping) else None
+        if (not isinstance(ranking, Mapping)
+                or ranking.get("algorithm_version") != "discovery-70-20-10-v1"
+                or not isinstance(components, Mapping)
+                or set(components) != component_names
+                or any(type(components[name]) not in {int, float} for name in component_names)):
+            return False
+    return True
+
+
 def _run_child(plan: LivePlan, command: list[str], *, deadline: float) -> LiveOutcome:
     started = time.monotonic()
     remaining = max(0.0, deadline - started)
@@ -240,11 +265,9 @@ def _child_main() -> int:
                 rows = document.get("coverage", []) if isinstance(document, dict) else []
                 row = next(item for item in rows if isinstance(item, dict) and item.get("source_id") == source_id)
                 source_statuses.append(str(row.get("status", "unknown")))
-                results = document.get("results", [])
-                if not isinstance(results, list) or any(
-                    not isinstance(item, dict) or item.get("validation_status") != "eligible" for item in results
-                ):
+                if not _valid_discovery_result_envelope(document):
                     raise TypeError("invalid materialized result envelope")
+                results = document["results"]
                 returned_count += len(results)
                 partial = partial or bool(row.get("incomplete_results"))
                 budget = document.get("timings", {}).get("request_budget", {}).get("request", {})
@@ -266,8 +289,8 @@ def _child_main() -> int:
     elif observed & transient or any(code == 2 for code in exit_codes):
         status, reason = INCONCLUSIVE, "transient_outcome"
     elif returned_count == 0:
-        # A provider that cannot materialize any positive destination has not
-        # passed the live integration gate, even if its search envelope parsed.
+        # A provider that cannot return any candidate for the positive probes
+        # has not passed the live integration gate, even if its envelope parsed.
         status, reason = FAIL, "contract_failure"
     else:
         status, reason = PASS, "completed"
