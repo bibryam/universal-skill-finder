@@ -133,13 +133,17 @@ class ProvisionalDeadlineTests(unittest.TestCase):
             )
             finder.adapter_map = {"skills-sh": Adapter()}
             finder._validate_ranked_pool = lambda *_args, **_kwargs: None  # type: ignore[method-assign]
-            policy = NetworkPolicy(0.10, 0.20, 0.05)
+            # This test covers redaction after a preview failure, not source
+            # admission timing. Leave enough collection headroom for slower
+            # Windows runners and assert that the mocked failure was exercised.
+            policy = NetworkPolicy(1.0, 2.0, 0.20)
             # Synthetic redaction sentinel: it must never reach report output.
             secret = "fixture-secret-preview-error"  # pragma: allowlist secret - synthetic exception-redaction fixture
             with patch("universal_skill_finder.federation.NetworkPolicy.for_mode", return_value=policy), \
-                 patch.object(finder, "_cached_destination_proof", side_effect=RuntimeError(secret)):
+                 patch.object(finder, "_cached_destination_proof", side_effect=RuntimeError(secret)) as failed_preview:
                 report = finder.search("pdf forms", preview=True)
 
+        self.assertGreaterEqual(failed_preview.call_count, 1)
         self.assertEqual(report.notes, [
             "An optional early destination check did not complete; only final eligible results are shown."
         ])
