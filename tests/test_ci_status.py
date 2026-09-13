@@ -11,6 +11,11 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class SourceWorkflowStatusTests(unittest.TestCase):
+    def test_live_harness_and_workflow_changes_trigger_source_evidence(self):
+        workflow = (ROOT / ".github/workflows/live-sources.yml").read_text(encoding="utf-8")
+        self.assertIn("- '.github/workflows/live-sources.yml'", workflow)
+        self.assertIn("- 'tests/live/source_checks.py'", workflow)
+
     def run_step(self, name: str, command: str, status: int):
         bash = shutil.which("bash")
         if not bash:

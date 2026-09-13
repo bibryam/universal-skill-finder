@@ -49,7 +49,10 @@ class _Budget:
         self.response_limit = configured if type(configured) is int and configured > 0 else MAX_TOTAL_BYTES
 
     def get(self, path: str, *, max_bytes: int, params: dict[str, object] | None = None) -> Any:
-        remaining = self.deadline - time.monotonic()
+        # Large monotonic clock values can make subtraction round a few ulps
+        # above the original duration on some platforms. Keep the forwarded
+        # request timeout inside the declared hard cap.
+        remaining = min(MAX_SECONDS, self.deadline - time.monotonic())
         if remaining <= 0 or self.bytes_left <= 0 or self.requests_left <= 0:
             raise _BudgetExceeded("GitHub discovery reached its request, byte, or time budget")
         self.requests_left -= 1

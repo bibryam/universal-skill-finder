@@ -37,10 +37,11 @@ class SelectedRankingTests(unittest.TestCase):
         result = self.finder._merge([row], "humanize")[0]
         trace = result.ranking
         self.assertEqual(trace["algorithm_version"], ALGORITHM_VERSION)
-        evidence = trace["evidence"]["lexical_occurrence"]
-        self.assertEqual(evidence["name_groups"], ["humanize"])
-        self.assertEqual(evidence["description_groups"], ["humanize"])
-        self.assertEqual(trace["components"]["lexical"], 0.95)
+        evidence = trace["evidence"]["relevance_occurrence"]
+        self.assertEqual(evidence["query_groups"], ["humanize"])
+        self.assertEqual(evidence["name_coverage"], 1.0)
+        self.assertEqual(evidence["description_coverage"], 1.0)
+        self.assertEqual(trace["components"]["query_relevance"], 1.0)
         self.assertEqual(compatible_match_percent("humanize", "Humanizer"), 100)
 
     def test_ranking_version_matches_snapshot_contract(self):
@@ -56,8 +57,8 @@ class SelectedRankingTests(unittest.TestCase):
         split = self.finder._merge([
             candidate("anti-slop", "anti-slop", "Remove generic AI prose"),
         ], "anti-slop")[0]
-        self.assertEqual(compact.ranking["components"]["lexical"], split.ranking["components"]["lexical"])
-        self.assertEqual(compact.ranking["evidence"]["lexical_occurrence"]["name_phrase"], 1.0)
+        self.assertEqual(compact.ranking["components"]["query_relevance"], split.ranking["components"]["query_relevance"])
+        self.assertTrue(compact.ranking["evidence"]["relevance_occurrence"]["exact_or_ordered_phrase"])
         self.assertEqual(compact.text_match_percent, 100)
 
     def test_exact_owner_repository_navigation_survives_relevance_admission(self):
@@ -69,41 +70,47 @@ class SelectedRankingTests(unittest.TestCase):
         ), 100)
         self.assertTrue(self.finder._relevance_admissible(row, "example/skills"))
         merged = self.finder._merge([row], "example/skills")[0]
-        self.assertGreater(merged.ranking["components"]["lexical"], 0)
+        self.assertGreater(merged.ranking["components"]["query_relevance"], 0)
 
-    def test_description_corroboration_is_recorded_as_a_tie_break(self):
-        corroborated = candidate("one", "Humanizer", "Humanize text while preserving your voice")
-        plain = candidate("two", "Humanizer", "A general writing tool")
-        results = self.finder._merge([plain, corroborated], "humanize")
-        self.assertTrue(results[0].ranking["tie_breaks"]["description_corroboration"])
+    def test_exact_phrase_is_recorded_as_a_tie_break(self):
+        row = candidate("one", "Humanize prose", "Preserve the writer's voice")
+        result = self.finder._merge([row], "humanize prose")[0]
+        self.assertTrue(result.ranking["tie_breaks"]["exact_or_ordered_phrase"])
 
-    def test_only_typed_skills_sh_skill_installs_are_rankable(self):
-        skills = candidate("skills", "PDF forms", "Fill PDF forms", source="skills-sh")
-        skills.metrics = {"installs": 50_000, "github_stars": 0}
-        skills.metric_observations = [{
+    def test_typed_skill_metrics_are_normalized_only_within_the_same_source(self):
+        popular = candidate("popular", "PDF forms", "Fill PDF forms", source="skills-sh")
+        popular.metrics = {"installs": 50_000, "github_stars": 0}
+        popular.metric_observations = [{
             "provider": "skills-sh", "name": "installs", "value": 50_000,
             "scope": "skill", "provenance": "source_provided",
         }]
-        other = candidate("other", "PDF forms", "Fill PDF forms", source="skillsmp")
-        other.metrics = {"github_stars": 10_000_000, "installs": 10_000_000}
-        other.metric_observations = [{
-            "provider": "skillsmp", "name": "installs", "value": 10_000_000,
+        quiet = candidate("quiet", "PDF forms", "Fill PDF forms", source="skills-sh")
+        quiet.metric_observations = [{
+            "provider": "skills-sh", "name": "installs", "value": 10,
             "scope": "skill", "provenance": "source_provided",
         }]
-        results = self.finder._merge([other, skills], "pdf forms")
+        other = candidate("other", "PDF forms", "Fill PDF forms", source="skillsmp")
+        other.metric_observations = [{
+            "provider": "skillsmp", "name": "installs", "value": 10_000_000,
+            "scope": "repository", "provenance": "source_provided",
+        }]
+        results = self.finder._merge([other, quiet, popular], "pdf forms")
         traces = {row.skill_path: row.ranking for row in results}
-        self.assertEqual(traces["skills"]["components"]["skill_adoption"], 0.1)
-        self.assertEqual(traces["other"]["components"]["skill_adoption"], 0.0)
-        self.assertIn("repository_stars", traces["other"]["evidence"]["excluded"])
+        self.assertGreater(traces["popular"]["components"]["source_signal"],
+                           traces["quiet"]["components"]["source_signal"])
+        self.assertEqual(traces["other"]["evidence"]["source_signal"]["metric"]["source_percentile"], 0.5)
+        self.assertIn("cross_source_raw_metrics", traces["other"]["evidence"]["excluded"])
 
-    def test_native_rank_and_repository_stars_do_not_change_selected_order(self):
+    def test_native_rank_changes_order_but_repository_stars_do_not(self):
         alpha = candidate("alpha", "Alpha PDF forms", "Fill PDF forms")
         beta = candidate("beta", "Beta PDF forms", "Fill PDF forms")
         expected = [row.id for row in self.finder._merge([alpha, beta], "pdf forms")]
         alpha.native_rank, beta.native_rank = 1_000_000, 1
         alpha.metrics = {"github_stars": 0}
         beta.metrics = {"github_stars": 10_000_000}
-        self.assertEqual([row.id for row in self.finder._merge([alpha, beta], "pdf forms")], expected)
+        changed = [row.id for row in self.finder._merge([alpha, beta], "pdf forms")]
+        self.assertNotEqual(changed, expected)
+        self.assertEqual(changed[0], next(row.id for row in self.finder._merge([beta], "pdf forms")))
 
     def test_bounded_repository_content_proof_survives_the_merge(self):
         source = {"id": "repo", "kind": "repository", "adapter": "github-repo", "repository": "example/skills", "ref": "main"}

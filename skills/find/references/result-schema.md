@@ -6,15 +6,17 @@ Developer interface: use `search --json` for machine-readable output through the
 sh scripts/run.sh search "pdf forms" --json
 ```
 
-By default, every enabled source is searched, a bounded accepted pool is frozen, and `results` contains the first page of up to 10 destination-verified findings. Page size is a maximum, not a guarantee: when the deadline, request budget, or 30-candidate scan bound stops verification early, the report marks a nonempty underfilled page incomplete and records how many candidates were checked and deferred. `--count N` sets the overall snapshot cap and `--page-size N` sets page size. The legacy `--max-results` controls the same overall cap. Explicit `--report-json PATH` saves ordering, evidence and numbering for `page` and `explain`; direct CLI searches do not persist reports automatically. `--json` and `--markdown` are mutually exclusive. See [SKILL.md](../SKILL.md).
+By default, every enabled source is searched concurrently for up to 20 native candidates, the normalized and deduplicated pool is ranked and frozen, and `results` contains the first 25 findings. Destination verification does not gate discovery output. `--per-source-limit N` controls source depth, `--count N` sets the overall display cap, and `--page-size N` sets page size. The legacy `--max-results` controls the same overall cap. Explicit `--report-json PATH` saves ordering, evidence, coverage, and numbering for `page`, `inspect`, `explain`, and `details`; direct CLI searches do not persist reports automatically. `--json` and `--markdown` are mutually exclusive. See [SKILL.md](../SKILL.md).
 
-For a saved report, `page --report SNAPSHOT --more` materializes the next verified page from the frozen pool without querying sources or extracting a cursor. It raises the cap by one page only when the current cap has been reached and candidates remain (maximum 100). `--extend-count N` sets an explicit larger overall cap. `page --report SNAPSHOT --cursor TOKEN` remains available for explicit continuation or replay; a consumed cursor is replay-safe and a forged, stale, or unrelated cursor is rejected. Do not combine `--cursor` and `--more`. Pool exhaustion requires a separate new or deeper search.
+For a saved discovery report, `page --report SNAPSHOT` materializes the next ranked page directly from the frozen pool. `page --report SNAPSHOT --all` returns the complete frozen ranking up to its saved cap. Neither operation queries sources, validates destinations, deduplicates, or reranks. `page --report SNAPSHOT --cursor TOKEN` supports explicit continuation or replay; a consumed cursor is replay-safe and a forged, stale, or unrelated cursor is rejected. `--more` and `--extend-count N` remain compatibility controls for searches created with a lower cap. Pool exhaustion requires a separate new or deeper search.
 
-Page accepts `--progress auto|plain|off` and `--report-file FRESH_PATH`, like search. Progress goes to stderr; the complete rendered report goes to stdout and the optional new artifact. Existing artifacts are never overwritten. A page scans at most 30 frozen identities within its time/request budget; unscheduled candidates remain pending. Empty no-progress attempts do not become permanent exhausted pages. Older empty histories caused by missing immutable occurrence destinations can be resumed safely with `--more`.
+`inspect --report SNAPSHOT --result N` performs fresh bounded validation for one already numbered result and writes its evidence back to the snapshot. It never changes `ordered_pool` or `result_numbers`. `explain` reads the stored ranking trace; `details` reads the stored source coverage. A deeper search is a new search with a larger per-source limit and a new snapshot, so ordering and numbers can change.
 
-Snapshots retain original source coverage, occurrence/duplicate counts, provenance, local inventory and search timings. Pages update current-page shown counts and proof partitions without presenting themselves as new searches. Legacy snapshots without saved coverage say that coverage is unavailable, not that zero sources were searched. Renderers accept both live records and their serialized mapping form without dropping metrics or inventory annotations.
+Page accepts `--progress auto|plain|off` and `--report-file FRESH_PATH`, like search. Progress goes to stderr; the complete rendered report goes to stdout and the optional new artifact. Existing artifacts are never overwritten. Discovery paging is deterministic array slicing and has no network deadline or validation scan limit. Legacy verified snapshots retain their bounded validation behavior for compatibility.
 
-Schema 2 deliberately changes old `--max-results` and programmatic `max_results` output: the value is an overall snapshot cap, while `results` is one page. Use `--page-size` (or `page_size`) for a larger first page or saved continuation for later pages. The legacy 1–500 argument range remains accepted, but new `--count` and Show more are capped at 100.
+Snapshots retain original source coverage, occurrence/duplicate counts, provenance, local inventory, search timings, full ordered result records, and ranking traces. Pages update current-page shown counts without presenting themselves as new searches. Inspection evidence is independent from ordering. Legacy snapshots without saved coverage say that coverage is unavailable, not that zero sources were searched. Renderers accept both live records and their serialized mapping form without dropping metrics or inventory annotations.
+
+Schema 2 treats `--max-results` and programmatic `max_results` as an overall snapshot cap, while `results` is one page. Use `--page-size` (or `page_size`) for a larger first page or saved continuation for later pages. The legacy 1–500 argument range remains accepted; new `--count` and Show more are capped at 100. `--all` displays the saved cap and does not extend it.
 
 **Source** is the umbrella term; display types are **Registry**, **Repository**, **Local directory**, and **Search index**. The schema-2 report retains established names such as `source_id`, `source_ids`, `source_kind`, and `metrics_by_source`. Display types do not rename `source_kind`. `--repository` remains a compatibility alias for `--source`.
 
@@ -25,6 +27,7 @@ The top-level document contains:
 | `schema_version` | Search output contract version, currently `2` |
 | `report_format_version` | Human/paged report contract, currently `3` |
 | `mode` | `online`, `offline_preview`, or `dry_run` |
+| `discovery_mode` | `true` for the default ungated discovery flow; `false` for legacy verified materialization |
 | `provenance` | Release and contract versions plus code, catalogue, and effective-configuration revisions |
 | `query` | Cleaned query sent to runnable sources |
 | `generated_at` | UTC ISO 8601 generation time |
@@ -34,17 +37,17 @@ The top-level document contains:
 | `installed_scan` | Local inventory scope/completeness, or why checking was skipped |
 | `requested_count`, `page_size` | Overall requested cap and current page size |
 | `accepted_occurrences`, `unique_count` | Frozen pre-merge and merged pool counts |
-| `eligible_count`, `unavailable_count`, `inconclusive_count`, `not_checked_count` | Disjoint destination-validation partitions |
-| `validation_checked_count`, `validation_deferred_count` | Identities whose bounded final validation completed without hitting a stop bound, and identities deferred by that bound |
-| `validation_stop_reason`, `validation_stopped_reason`, `page_incomplete` | Stable stop code, bounded human explanation, and whether a nonempty page stopped below its target |
+| `eligible_count`, `unavailable_count`, `inconclusive_count`, `not_checked_count` | Disjoint inspection-evidence partitions; default discovery results are normally not checked |
+| `validation_checked_count`, `validation_deferred_count` | Completed checks and candidates deferred to explicit inspection |
+| `validation_stop_reason`, `validation_stopped_reason`, `page_incomplete` | `deferred_to_inspect` in discovery mode; legacy verified-mode stop diagnostics remain additive |
 | `page_start`, `page_shown`, `materialized_total` | Current-page and cumulative numbering counts |
-| `snapshot`, `continuation`, `show_more_available`, `show_more_cursor`, `can_explain` | Actual saved-state and follow-up availability; Show more is explicit and frozen-pool only |
+| `snapshot`, `continuation`, `show_more_available`, `show_more_cursor`, `can_explain` | Actual saved-state and follow-up availability; every continuation is frozen-pool only |
 | `timings` | Measured phase durations and selected deadline settings, not an SLA |
 | `notes` | Bounded diagnostic summaries, including known cache-access and DNS failures; saved notes on continuation are labelled as original-search context |
 | `continuation_page`, `coverage_context`, `pool_exhausted`, `has_pending` | Continuation rendering context; coverage context is `saved` or `unavailable` |
 | `search_timings` | Original search phase measurements retained on continuation; page work is in `timings.page_ms` |
 
-Validation stop codes are `page_full`, `pool_exhausted`, `deadline_reached`, `request_budget_reached`, `scan_limit_reached`, `validation_unavailable`, `validation_deferred`, or `validation_state_unavailable`. Only bounded-stop codes with deferred work make a nonempty page incomplete.
+The discovery stop code is `deferred_to_inspect`. Legacy validation stop codes include `page_full`, `pool_exhausted`, `deadline_reached`, `request_budget_reached`, `scan_limit_reached`, `validation_unavailable`, `validation_deferred`, and `validation_state_unavailable`.
 
 ## Example
 
@@ -55,6 +58,7 @@ This example is illustrative, not a claim about a real registry or repository:
   "schema_version": 2,
   "report_format_version": 3,
   "mode": "online",
+  "discovery_mode": true,
   "query": "pdf forms",
   "generated_at": "2026-01-01T12:00:00+00:00",
   "configuration_path": "/home/user/.config/universal-skill-finder/sources.json",
@@ -74,39 +78,34 @@ This example is illustrative, not a claim about a real registry or repository:
       "text_match_percent": 100,
       "rank_fusion_score": 0.03252247,
       "result_number": 1,
-      "validation_status": "eligible",
+      "validation_status": "not_checked",
       "ranking": {
-        "algorithm_version": "soft-native-v3",
-        "score": 0.91,
-        "components": {"lexical": 0.84, "skill_installs": 0.07}
+        "algorithm_version": "discovery-70-20-10-v1",
+        "score": 0.78,
+        "components": {
+          "query_relevance": 0.9,
+          "source_signal": 0.5,
+          "corroboration": 0.5
+        },
+        "evidence": {
+          "weights": {
+            "query_relevance": 0.7,
+            "source_signal": 0.2,
+            "corroboration": 0.1
+          }
+        }
       },
-      "link_proofs": [
+      "browse_links": [
         {
           "role": "skill_destination",
           "url": "https://github.com/example-org/example-skills/tree/main/skills/pdf-forms",
-          "status": "eligible",
-          "identity_basis": "github-owner-repository-path-v1"
-        },
-        {
-          "role": "repository",
-          "url": "https://github.com/example-org/example-skills",
-          "status": "eligible",
-          "identity_basis": "github-owner-repository-v1"
+          "status": "discoverable",
+          "method": "normalized_github_identity"
         }
       ],
       "target_proof": {
         "kind": "github",
-        "status": "eligible",
-        "method": "anonymous_exact_skill_md_get",
-        "identity_basis": "github-exact-skill-md-v1",
-        "url": "https://raw.githubusercontent.com/example-org/example-skills/main/skills/pdf-forms/SKILL.md",
-        "actual_name": "PDF Forms",
-        "content_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-        "resolved": {
-          "repository": "example-org/example-skills",
-          "ref": "main",
-          "skill_path": "skills/pdf-forms"
-        }
+        "status": "not_checked"
       },
       "metrics_by_source": {
         "example-catalog": {"downloads": 42}
@@ -127,12 +126,12 @@ This example is illustrative, not a claim about a real registry or repository:
       "occurrences": []
     }
   ],
-  "requested_count": 10,
-  "page_size": 10,
-  "eligible_count": 1,
+  "requested_count": 100,
+  "page_size": 25,
+  "eligible_count": 0,
   "unavailable_count": 0,
   "inconclusive_count": 0,
-  "not_checked_count": 0,
+  "not_checked_count": 1,
   "page_start": 1,
   "page_shown": 1,
   "materialized_total": 1,
@@ -151,8 +150,8 @@ This example is illustrative, not a claim about a real registry or repository:
       "cache_age_seconds": null,
       "host": "catalog.example.invalid",
       "target": "catalog.example.invalid",
-      "requested_limit": 10,
-      "effective_limit": 10,
+      "requested_limit": 20,
+      "effective_limit": 20,
       "source_total": 1,
       "total_relation": "exact",
       "shown": 1
@@ -181,12 +180,13 @@ The abbreviated example omits `provenance`. Real reports include release, code, 
 | `trust` | Distinct source-declared provenance labels, strongest first |
 | `text_match_percent` | Transparent query token/phrase match against preferred text and path |
 | `rank_fusion_score` | Reciprocal rank fusion diagnostic retained for compatibility; not the selected ordering score |
-| `metrics_by_source` | Original source metrics, kept separate by source ID; available count metrics appear in the human-facing table |
+| `metrics_by_source` | Original source metrics kept separate by source ID; compact output selects at most one |
 | `install` | Suggested handoff data; empty when no safe handoff is known |
 | `warnings` | Distinct warnings raised by source adapters |
 | `occurrences` | Every normalized source candidate retained for audit and comparison |
 | `installed` | Fresh local installed-skill evidence; empty when not checked, never trusted from source/cache metadata |
-| `ranking` | `soft-native-v3` version, score, components, tie-breaks and evidence actually used |
+| `ranking` | `discovery-70-20-10-v1` version, score, three components, tie-breaks, weights, and evidence actually used |
+| `browse_links` | Connector-reviewed discovery routes. `discoverable` means structurally safe to show, not live-checked or install-ready |
 | `link_proofs` | Checked human-navigation evidence for GitHub directories, repository roots, and source listings; only an `eligible` or explicitly display-accepted proof for that exact destination authorizes its displayed link |
 | `target_proof` | Reported versus resolved target identity and exact raw `SKILL.md` content/path evidence; this does not itself authorize a displayed link |
 | `attributions` | Eligible, independently proof-gated native destinations; `source_ids` retains every contributor, including sources without a verified listing |
@@ -195,13 +195,13 @@ The abbreviated example omits `provenance`. Real reports include release, code, 
 
 `trust` is a provenance label, not a safety verdict. `text_match_percent` and `rank_fusion_score` remain diagnostics. Neither determines schema-2 ordering.
 
-The `Metrics` column shows nonnegative `github_stars`, `stars`, `installs`, `downloads`, `bookmarks`, and `votes` with source IDs. Zero is valid; missing/invalid counts display as unavailable. Counts are never summed across sources. Unspecified scores, AI scores, and security grades are not presented as popularity or safety measures.
+`metrics_by_source` preserves nonnegative `github_stars`, `stars`, `installs`, `downloads`, `bookmarks`, and `votes` with source IDs. Zero is valid; missing or invalid counts are unavailable. Compact discovery output selects at most one source-native metric. Inspection can display all supported observations. Counts are never summed across sources. Unspecified scores, AI scores, and security grades are not presented as popularity or safety measures.
 
 For an occurrence from the `tessl` adapter, the same column may show separately labelled `tessl_quality` (a raw normalized value from 0 to 1, rounded for display), `tessl_security_level` (`NONE`, `LOW`, `MEDIUM`, `HIGH` or `CRITICAL`), and `tessl_scored_at`. These are Tessl's version-specific assessments, not popularity counts or this finder's security verdict. Zero quality is preserved; missing or unsupported values are omitted rather than converted. `NONE` is not a safety guarantee. Deprecated `scores.security` is never displayed. `tessl_score_version` and other supported source-score fields remain in JSON; they are not Git refs, fingerprints or federation ranking inputs.
 
-Tessl skill-containing packages may appear as explicitly labelled bundle candidates with a package listing URL and inspection warning. Their package name/version is not an exact skill name/ref, and they have no generated install command. `tessl_metric_scope` distinguishes `skill` from `bundle`; package assessments stay in JSON and are not displayed as individual-skill quality scores. `tessl_bundle_version` identifies the inspected package version. Individual GitHub skill rows retain their repository/path for deduplication and a separate connector-reviewed Tessl `/registry/skills/github/OWNER/REPOSITORY/SKILL` listing candidate. That source listing remains unlinked until its exact page confirms the encoded repository and skill name; unresolved GitHub refs still require inspection.
+Tessl skill-containing packages may appear as explicitly labelled bundle candidates with a package listing URL and inspection warning. Their package name/version is not an exact skill name/ref, and they have no generated install command. `tessl_metric_scope` distinguishes `skill` from `bundle`; package assessments stay in JSON and are not displayed as individual-skill quality scores. `tessl_bundle_version` identifies the inspected package version. Individual GitHub skill rows retain their repository/path for deduplication and a separate code-owned Tessl `/registry/skills/github/OWNER/REPOSITORY/SKILL` discovery route. The route can be shown before liveness is known; inspection must confirm the page, encoded repository, and skill name.
 
-Configured GitHub repository sources can use separately cached metadata containing `github_stars`, `github_stars_scope: "repository"`, `github_stars_repository`, and `github_stars_observed_at`. Discovery never initiates or waits for a stars request; the current implementation only reads a fresh existing metadata entry. Stars describe the repository, not each skill, and never affect `soft-native-v3` ranking.
+Configured GitHub repository sources can use separately cached metadata containing `github_stars`, `github_stars_scope: "repository"`, `github_stars_repository`, and `github_stars_observed_at`. Discovery never initiates or waits for a stars request; the current implementation only reads a fresh existing metadata entry. Stars describe the repository, not each skill, and repository-scoped metrics never affect ranking.
 
 ## Installed-skill evidence
 
@@ -243,7 +243,15 @@ URL identities retain query, fragment, and semicolon parameters. Query order is 
 
 ## Ranking rules
 
-`soft-native-v3` is the selected algorithm. It combines bounded lexical evidence from name, description and path with a bounded contribution only from typed, skill-scoped skills.sh install observations. Separator-only compounds such as `anti-slop` and `antislop` are equivalent. At least one compatible query term must be present before a result can enter the public pool. A query term family contributes once. Provider selection alone, destination validity, unknown native order, repository stars, generic popularity, security grades and source overlap contribute zero. Deterministic title/description corroboration, name and stable identity settle ties. `ranking.components`, `ranking.tie_breaks`, and `ranking.evidence` record the actual decision inputs. RRF remains a compatibility diagnostic only.
+`discovery-70-20-10-v1` ranks the complete unique retrieved pool before page slicing:
+
+- `query_relevance` has weight 0.70. Within this component, name coverage is 0.50, description coverage 0.30, path/tags coverage 0.10, and an exact or ordered phrase 0.10. One coherent occurrence supplies all fields.
+- `source_signal` has weight 0.20. Within this component, native rank percentile is 0.70 and a typed skill-level metric percentile is 0.30. Native rank is normalized against that occurrence's requested depth. Metrics are compared only by source ID and metric name; missing rank or metric evidence is neutral at 0.5.
+- `corroboration` has weight 0.10. One independent adapter family scores 0, two score 0.5, and three or more score 1. Repeated source instances using the same adapter do not multiply the signal.
+
+Supported source-local metric priority is installs, downloads, votes, bookmarks, then skill-scoped stars. Repository-scoped GitHub stars do not qualify. Raw counts from different sources or metric types are never compared or summed.
+
+Provider-query sources may retain a provider-selected result with zero local lexical evidence; it receives a low query-relevance component instead of being silently deleted. Repository and local-directory connectors still require a positive local match because they search catalogues rather than a remote query engine. Separator-only compounds such as `anti-slop` and `antislop` are equivalent. Destination validity, installation readiness, completion order, trust, security grades, repository metrics, and RRF never affect selected ordering. `ranking.components`, `ranking.tie_breaks`, and `ranking.evidence` record the decision inputs.
 
 ## Coverage records
 
@@ -264,7 +272,7 @@ URL identities retain query, fragment, and semicolon parameters. Query order is 
 | `requested_limit`, `effective_limit` | Requested and provider-effective candidate depths |
 | `source_total`, `total_relation` | Provider-reported total plus `exact`, `lower_bound`, or `unknown`; unknown is null |
 | `admission_status`, `live_status`, `cache_status`, `health_status` | Scheduling, request, cache and health state kept separate |
-| `shown` | Unique globally ranked and destination-verified results on this page attributed to the source; not additive across sources |
+| `shown` | Unique globally ranked results on this page attributed to the source; not additive across sources |
 
 Common statuses include:
 
@@ -274,7 +282,7 @@ Common statuses include:
 - Input/protocol: `schema_mismatch`, `archive_limit`, `not_found`
 - Fallback: `failed`
 
-Use `enabled` to show all enabled sources, including failures and zero-match completions. A selected enabled source that fails makes coverage partial; intentionally disabled, excluded, or unselected sources do not imply a failure. `ok` and `cached` may carry `incomplete_results: true`: retain verified candidates but render an explicit partial status and diagnostic. The flag survives query caching even for zero candidates; strict mode returns failure. An empty partial response must not be presented as a fully completed no-match search.
+Use `enabled` to show all enabled sources, including failures and zero-match completions. A selected enabled source that fails makes coverage partial; intentionally disabled, excluded, or unselected sources do not imply a failure. `ok` and `cached` may carry `incomplete_results: true`: retain accepted candidates but render an explicit partial status and diagnostic. The flag survives query caching even for zero candidates; strict mode returns failure. An empty partial response must not be presented as a fully completed no-match search.
 
 ## Source configuration view
 
@@ -302,7 +310,7 @@ Consumers must:
 
 ### Command availability and selected proposals
 
-The default Markdown/plain presenter reports `Inspect and install: type **Inspect #N**  **Install #N**` only for compatible, fully specified targets with eligible target and destination proof. It offers those agent actions instead of repeating a long command in every result. Otherwise the action line gives the exact unavailability reason and a checked inspection destination when one exists. Missing safe links are reported, never guessed. After the user selects a result, the reviewed proposal has this form:
+The default Markdown/plain search presenter offers **Inspect #N**, not an installation-ready claim. Inspection shows current destination state, full source-scoped signals, warnings, resolved target differences, and whether a compatible proposal can be generated. Missing safe links are reported, never guessed. After inspection, a reviewed proposal has this form:
 
 ```text
 npx skills@1.5.23 add https://github.com/OWNER/REPO/tree/REF/PATH --skill NAME --agent codex --copy

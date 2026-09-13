@@ -216,7 +216,7 @@ class MarkdownReportTests(unittest.TestCase):
                 self.assertNotIn(url, fallback)
                 self.assertIn("Listing link unavailable", fallback)
 
-    def test_cli_markdown_keeps_default_top_ten_and_all_enabled_sources(self):
+    def test_cli_markdown_uses_compact_discovery_results_and_searches_all_enabled_sources(self):
         with TemporaryDirectory() as temp:
             finder, adapters = default_search_fixture(Path(temp))
             output = io.StringIO()
@@ -224,13 +224,20 @@ class MarkdownReportTests(unittest.TestCase):
                  patch("universal_skill_finder.cli.UniversalSkillFinder", return_value=finder), \
                  patch("universal_skill_finder.cli.annotate_installed", side_effect=AssertionError("host scan forbidden")), \
                  redirect_stdout(output):
-                self.assertEqual(main(["pdf", "forms", "--markdown", "--assistant", "claude-code", "--no-installed-check"]), 0)
+                self.assertEqual(main([
+                    "pdf", "forms", "--markdown", "--assistant", "claude-code", "--no-installed-check",
+                    "--report-json", str(Path(temp) / "snapshot.json"),
+                ]), 0)
         text = output.getvalue()
-        self.assertEqual(len(re.findall(r"^### \d+\. ", text, re.MULTILINE)), 10)
-        self.assertIn("Installation unavailable", text)
-        self.assertIn("Failed: quota exhausted", text)
-        self.assertIn("disabled-registry", text)
-        self.assertEqual(adapters["polyskill"].calls, 0)
+        self.assertEqual(len(re.findall(r"^\d+\. ", text, re.MULTILINE)), 16)
+        self.assertIn("**16 unique candidates**", text)
+        self.assertIn("**showing 1–16**", text)
+        self.assertIn("Partial coverage", text)
+        self.assertIn("**Search details**", text)
+        self.assertNotIn("Installation unavailable", text)
+        self.assertEqual({name: adapter.calls for name, adapter in adapters.items()}, {
+            "skills-sh": 1, "github-repo": 1, "skillsmp": 1, "clawhub": 1, "polyskill": 0,
+        })
 
     def test_json_and_markdown_are_mutually_exclusive(self):
         with redirect_stderr(io.StringIO()), self.assertRaises(SystemExit) as error:

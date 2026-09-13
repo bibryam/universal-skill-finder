@@ -3,7 +3,6 @@ from __future__ import annotations
 import io
 import json
 import sys
-import time
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
 from dataclasses import replace
@@ -210,13 +209,11 @@ class CliV2Tests(unittest.TestCase):
             )
             save_exclusive_path(path, snapshot)
 
-            def slow_eligible(*_args, **_kwargs):
-                time.sleep(0.02)
-                return {"status": "eligible"}
-
+            eligible = Mock(return_value={"status": "eligible"})
             policy = NetworkPolicy(1.0, 1.0, 0.01)
             with patch("universal_skill_finder.cli.NetworkPolicy.for_mode", return_value=policy), \
-                 patch("universal_skill_finder.cli.validate_frozen_result_record", side_effect=slow_eligible):
+                 patch("universal_skill_finder.cli.Deadline.remaining", side_effect=(1.0, 0.0, 0.0)), \
+                 patch("universal_skill_finder.cli.validate_frozen_result_record", eligible):
                 code, output, error = self.invoke([
                     "page", "--report", str(path), "--json", "--progress", "off",
                 ])
@@ -229,6 +226,7 @@ class CliV2Tests(unittest.TestCase):
         self.assertEqual(document["validation_stop_reason"], "deadline_reached")
         self.assertEqual(document["validation_deferred_count"], 2)
         self.assertIn("deadline", document["validation_stopped_reason"])
+        eligible.assert_called_once()
 
     def test_replayed_underfilled_page_uses_its_own_number_range(self):
         with TemporaryDirectory() as temporary:

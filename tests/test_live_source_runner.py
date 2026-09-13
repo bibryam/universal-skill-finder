@@ -13,12 +13,36 @@ sys.path.insert(0, str(ROOT / "tests"))
 
 from live.source_checks import (
     CHILD_TIMEOUT_SECONDS, GLOBAL_TIMEOUT_SECONDS, INCONCLUSIVE, MAX_CONCURRENT_SOURCES,
-    MAX_QUERIES_PER_SOURCE, PASS, SKIP, child_environment, classify, plan_sources, run_live_children,
+    MAX_QUERIES_PER_SOURCE, PASS, SKIP, _valid_discovery_result_envelope,
+    child_environment, classify, plan_sources, run_live_children,
 )
 from live.source_checks import _write_overlay
 
 
 class LiveRunnerTests(unittest.TestCase):
+    def test_live_contract_accepts_unchecked_discovery_results_with_new_ranking_trace(self):
+        result = {
+            "id": "skill:video", "validation_status": "not_checked",
+            "ranking": {
+                "algorithm_version": "discovery-70-20-10-v1",
+                "components": {
+                    "query_relevance": 1.0,
+                    "source_signal": 0.5,
+                    "corroboration": 0.0,
+                },
+            },
+        }
+        self.assertTrue(_valid_discovery_result_envelope({
+            "discovery_mode": True, "results": [result],
+        }))
+        self.assertFalse(_valid_discovery_result_envelope({
+            "discovery_mode": False, "results": [result],
+        }))
+        result["ranking"]["components"] = {"lexical": 1.0}
+        self.assertFalse(_valid_discovery_result_envelope({
+            "discovery_mode": True, "results": [result],
+        }))
+
     def test_status_classifier_keeps_transient_failures_distinct(self):
         self.assertEqual(classify(0, "complete"), PASS)
         self.assertEqual(classify(429, "rate limit"), INCONCLUSIVE)

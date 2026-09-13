@@ -153,7 +153,7 @@ def _thaw_json(value: Any) -> Any:
 
 _REPORT_METADATA_FIELDS = frozenset({
     "coverage", "accepted_occurrences", "unique_count", "merged_duplicates",
-    "timings", "mode", "warnings", "provenance", "notes", "page_incomplete",
+    "timings", "mode", "discovery_mode", "warnings", "provenance", "notes", "page_incomplete",
     "validation_checked_count", "validation_deferred_count", "validation_stop_reason",
     "validation_stopped_reason",
 })
@@ -334,6 +334,101 @@ def seed_initial_page(snapshot: SearchSnapshot, candidate_ids: Iterable[str]) ->
             },
         }))
     return Page(ids, next_cursor, resume_cursor, seeded, is_exhausted=resume_cursor is None)
+
+
+def paginate_ranked_page(
+    snapshot: SearchSnapshot,
+    cursor: str | None,
+    *,
+    page_size: int | None = None,
+) -> Page:
+    """Materialize the next ranked slice without validation or source I/O.
+
+    Discovery numbering follows the immutable ordered pool directly. The
+    validation ledger remains independent so Inspect can record fresh proof
+    later without hiding, renumbering, or reordering a result.
+    """
+    size = page_size or snapshot.page_size
+    if not 1 <= size <= 100:
+        raise SnapshotError("invalid page size")
+    if cursor is None:
+        position, materialized = 0, 0
+        cursor = encode_cursor(snapshot.snapshot_id, 0, 0)
+    else:
+        position, materialized = decode_cursor(cursor, snapshot)
+    _check_materialized_state(snapshot, cursor, materialized)
+    previous = snapshot.cursor_history.get(cursor)
+    if previous is not None:
+        ids = previous.get("ids")
+        if not isinstance(ids, (list, tuple)) or not all(isinstance(item, str) for item in ids):
+            raise SnapshotError("snapshot cursor history is invalid")
+        expected = list(range(materialized + 1, materialized + len(ids) + 1))
+        if [snapshot.result_numbers.get(candidate_id) for candidate_id in ids] != expected:
+            raise SnapshotError("snapshot cursor history numbering is inconsistent")
+        next_cursor = previous.get("next_cursor")
+        return Page(
+            tuple(ids), next_cursor, next_cursor, snapshot, reused=True,
+            scanned_count=len(ids), is_exhausted=next_cursor is None,
+        )
+
+    records = set(snapshot.result_records)
+    numbers = dict(snapshot.result_numbers)
+    cap = min(size, max(0, snapshot.requested_cap - materialized))
+    selected: list[str] = []
+    while position < len(snapshot.ordered_pool) and len(selected) < cap:
+        candidate_id = snapshot.ordered_pool[position]
+        position += 1
+        if records and candidate_id not in records:
+            raise SnapshotError("snapshot lacks a frozen result record")
+        if candidate_id in numbers:
+            continue
+        numbers[candidate_id] = materialized + len(selected) + 1
+        selected.append(candidate_id)
+    total = materialized + len(selected)
+    next_cursor = (
+        encode_cursor(snapshot.snapshot_id, position, total)
+        if position < len(snapshot.ordered_pool) and total < snapshot.requested_cap else None
+    )
+    history = dict(snapshot.cursor_history)
+    history[cursor] = {
+        "ids": list(selected), "next_cursor": next_cursor,
+        "resume_cursor": next_cursor, "scanned_count": len(selected),
+        "has_pending": False, "pending_detail": None,
+    }
+    updated = replace(
+        snapshot, result_numbers=_frozen(numbers), cursor_history=_frozen(history),
+    )
+    return Page(
+        tuple(selected), next_cursor, next_cursor, updated,
+        scanned_count=len(selected), is_exhausted=next_cursor is None,
+    )
+
+
+def materialize_ranked_all(snapshot: SearchSnapshot) -> Page:
+    """Return the complete discovery view up to the saved overall cap.
+
+    Existing numbers must already match frozen rank positions. Any remaining
+    prefix receives its rank number directly. This performs no validation,
+    source request, reranking, or mutation of result evidence.
+    """
+    limit = min(snapshot.requested_cap, len(snapshot.ordered_pool))
+    ids = snapshot.ordered_pool[:limit]
+    if snapshot.result_records and any(candidate_id not in snapshot.result_records for candidate_id in ids):
+        raise SnapshotError("snapshot lacks a frozen result record")
+    existing = dict(snapshot.result_numbers)
+    _validate_result_numbers(existing, snapshot.ordered_pool)
+    for number, candidate_id in enumerate(ids, 1):
+        previous = existing.get(candidate_id)
+        if previous is not None and previous != number:
+            raise SnapshotError("discovery result numbering disagrees with frozen rank order")
+    if any(candidate_id not in ids for candidate_id in existing):
+        raise SnapshotError("materialized discovery result lies beyond the saved overall cap")
+    numbers = {candidate_id: number for number, candidate_id in enumerate(ids, 1)}
+    updated = replace(snapshot, result_numbers=_frozen(numbers))
+    return Page(
+        ids, None, None, updated,
+        reused=len(existing) == len(ids), scanned_count=len(ids), is_exhausted=True,
+    )
 
 
 def _cursor_data(snapshot_id: str, position: int, materialized: int) -> dict[str, Any]:
@@ -704,6 +799,41 @@ def _update_record_evidence(record: Mapping[str, Any], outcome: Mapping[str, Any
         updated["target_proof"] = proposed
     _freeze_json(updated)
     return updated
+
+
+def apply_validation_result(
+    snapshot: SearchSnapshot,
+    candidate_id: str,
+    outcome: Mapping[str, Any],
+) -> SearchSnapshot:
+    """Attach fresh Inspect evidence without changing rank or numbering."""
+    if candidate_id not in snapshot.ordered_pool:
+        raise SnapshotError("inspection result is outside the frozen pool")
+    checked = _validation_outcome(outcome)
+    records = _thaw_json(snapshot.result_records)
+    record = records.get(candidate_id)
+    if not isinstance(record, Mapping):
+        raise SnapshotError("snapshot has no frozen result record for inspection")
+    updated_record = (
+        _update_record_evidence(record, checked)
+        if "link_proofs" in checked or "target_proof" in checked
+        else _thaw_json(record)
+    )
+    if not isinstance(updated_record, dict):
+        raise SnapshotError("frozen result record is invalid")
+    updated_record["validation_status"] = checked["status"]
+    _freeze_json(updated_record)
+    records[candidate_id] = updated_record
+    ledger = dict(snapshot.validation_ledger)
+    ledger[candidate_id] = {
+        key: value for key, value in checked.items()
+        if key not in {"link_proofs", "target_proof"}
+    }
+    return replace(
+        snapshot,
+        result_records=_frozen(records),
+        validation_ledger=_frozen(ledger),
+    )
 
 
 def _check_materialized_state(snapshot: SearchSnapshot, cursor: str, materialized: int) -> None:

@@ -32,13 +32,16 @@ from .health import HealthStore
 from .installed import annotate_installed
 from .models import ProgressEvent, SearchReport, UNSAFE_LOCATION_WARNING
 from .presentation import (
-    ASSISTANTS, installed_label, render_explanation, render_help, render_markdown,
-    render_preview, render_progress, render_report,
+    ASSISTANTS, installed_label, render_explanation, render_help, render_inspection,
+    render_markdown, render_preview, render_progress, render_report,
+    render_search_details,
 )
 from .snapshot import (
-    MAX_PAGE_SCAN, Page, SnapshotError, create_snapshot, decode_cursor, extend_snapshot,
-    load_snapshot, materialize_page, next_safe_cursor, resolve_materialized_result, save_exclusive_path,
-    seed_initial_page, snapshot_dict, snapshot_writer_lock, update_snapshot,
+    MAX_PAGE_SCAN, Page, SnapshotError, apply_validation_result, create_snapshot,
+    decode_cursor, extend_snapshot,
+    load_snapshot, materialize_page, materialize_ranked_all, next_safe_cursor, paginate_ranked_page,
+    resolve_materialized_result, save_exclusive_path, seed_initial_page,
+    snapshot_dict, snapshot_writer_lock, update_snapshot,
     validate_frozen_result_record,
 )
 from .source_presentation import render_sources_markdown, source_rows
@@ -52,7 +55,10 @@ from .versioning import (
 )
 
 SUCCESS_STATUSES = {"ok", "cached"}
-COMMANDS = {"search", "help", "page", "explain", "repositories", "sources", "packs", "doctor", "cache"}
+COMMANDS = {
+    "search", "help", "page", "inspect", "explain", "details",
+    "repositories", "sources", "packs", "doctor", "cache",
+}
 GLOBAL_VALUE_OPTIONS = {"--config", "--cache-dir"}
 GLOBAL_STANDALONE_OPTIONS = {"-h", "--help", "--version"}
 
@@ -75,7 +81,7 @@ def _parser() -> argparse.ArgumentParser:
     search.add_argument("--limit", type=int, help="Legacy alias for --per-source-limit")
     search.add_argument("-n", "--count", type=int, help="Overall result cap (1-100)")
     search.add_argument("--max-results", type=int, help="Legacy overall snapshot cap (1-500)")
-    search.add_argument("--page-size", type=int, default=10, help="Checked results per page (1-100)")
+    search.add_argument("--page-size", type=int, default=25, help="Ranked results per page (1-100)")
     search.add_argument("--source", "--repository", dest="source", metavar="SOURCE_ID", action="append", default=[], help="Search only this source ID; repeatable")
     search.add_argument("--exclude", action="append", default=[], help="Skip this source ID; repeatable")
     search.add_argument("--offline", action="store_true", help="Use only cached and local data")
@@ -89,7 +95,7 @@ def _parser() -> argparse.ArgumentParser:
     search.add_argument("--no-installed-check", action="store_true", help="Skip the read-only check of standard local skill directories")
     search.add_argument("--strict", action="store_true", help="Return failure when any selected source fails or returns incomplete coverage")
     search.add_argument("--thorough", action="store_true", help="Use the longer measured network budget")
-    search.add_argument("--preview", action="store_true", help="Emit up to three early verified previews on stderr")
+    search.add_argument("--preview", action="store_true", help="Legacy verified-mode preview flag")
     search.add_argument("--progress", choices=("auto", "plain", "off"), default="auto", help="Interim stderr progress")
     search.add_argument("--report-file", type=Path, help="Exclusively create the rendered page artifact")
     search.add_argument("--report-json", type=Path, help="Exclusively create the bounded snapshot artifact")
@@ -101,6 +107,7 @@ def _parser() -> argparse.ArgumentParser:
     extension = page.add_mutually_exclusive_group()
     extension.add_argument("--extend-count", type=int, help="Explicitly raise this saved snapshot's overall cap (1-100)")
     extension.add_argument("--more", action="store_true", help="Continue, raising the cap by one page only when needed (up to 100)")
+    extension.add_argument("--all", action="store_true", help="Show the complete frozen ranking up to its saved overall cap")
     page_output = page.add_mutually_exclusive_group()
     page_output.add_argument("--json", action="store_true")
     page_output.add_argument("--markdown", action="store_true")
@@ -113,6 +120,18 @@ def _parser() -> argparse.ArgumentParser:
     explain.add_argument("--report", type=Path, required=True)
     explain.add_argument("--result", required=True)
     explain.add_argument("--markdown", action="store_true")
+
+    inspect = sub.add_parser("inspect", help="Check one saved result's live destination")
+    inspect.add_argument("--report", type=Path, required=True)
+    inspect.add_argument("--result", type=int, required=True)
+    inspect.add_argument("--assistant", choices=tuple(ASSISTANTS))
+    inspect_output = inspect.add_mutually_exclusive_group()
+    inspect_output.add_argument("--json", action="store_true")
+    inspect_output.add_argument("--markdown", action="store_true")
+
+    details = sub.add_parser("details", help="Show source coverage for a saved search")
+    details.add_argument("--report", type=Path, required=True)
+    details.add_argument("--markdown", action="store_true")
 
     sources = sub.add_parser("sources", aliases=["repositories"], help="List and configure sources")
     source_sub = sources.add_subparsers(dest="source_command", required=True)
@@ -297,8 +316,8 @@ def _resolve_search_args(args: argparse.Namespace) -> None:
     depth = args.per_source_limit if args.per_source_limit is not None else args.limit
     legacy_cap = args.max_results is not None
     cap = args.count if args.count is not None else args.max_results
-    args.limit = 10 if depth is None else depth
-    args.count = 10 if cap is None else cap
+    args.limit = 20 if depth is None else depth
+    args.count = 100 if cap is None else cap
     args.max_results = args.count
     args.legacy_max_results = legacy_cap
     if not 1 <= args.limit <= 200:
@@ -437,11 +456,8 @@ def _persist_report_snapshot(report: SearchReport, path: Path, args: argparse.Na
             # Inventory is read once before persistence. Preserve its per-result
             # annotation for later pages instead of scanning again.
             records[result.id]["installed"] = dict(result.installed)
-    # Federation already selected this display page from the fully validated
-    # ranked pool. Do not replay the separate 30-item snapshot scan here: a
-    # valid selected result may rank just beyond that window. Retain only
-    # identities whose persisted record still says eligible; this is a safety
-    # filter, never replenishment from elsewhere in the frozen pool.
+    # Federation already selected this display page. Discovery keeps the full
+    # ranked slice; legacy verified mode retains its historical proof gate.
     live_cap = min(args.count, args.page_size)
     initial_ids: list[str] = []
     retained_results = []
@@ -450,7 +466,7 @@ def _persist_report_snapshot(report: SearchReport, path: Path, args: argparse.Na
             break
         record = records.get(result.id)
         if (record is not None and result.id not in initial_ids
-                and _stored_validation(record).get("status") == "eligible"):
+                and (report.discovery_mode or _stored_validation(record).get("status") == "eligible")):
             initial_ids.append(result.id)
             retained_results.append(result)
     report.results = retained_results
@@ -462,7 +478,11 @@ def _persist_report_snapshot(report: SearchReport, path: Path, args: argparse.Na
     report.can_explain = bool(report.results)
     snapshot = create_snapshot(
         query=report.query,
-        options={"depth": args.limit, "sources": list(args.source), "excluded": list(args.exclude), "thorough": args.thorough},
+        options={
+            "mode": "discovery" if report.discovery_mode else "verified",
+            "depth": args.limit, "sources": list(args.source),
+            "excluded": list(args.exclude), "thorough": args.thorough,
+        },
         config_revision=str(report.provenance.get("effective_configuration_revision", "unavailable")),
         ordered_pool=ordered,
         requested_cap=args.count,
@@ -479,6 +499,7 @@ def _persist_report_snapshot(report: SearchReport, path: Path, args: argparse.Na
             "mode": report.mode,
             "provenance": dict(report.provenance),
             "notes": list(report.notes),
+            "discovery_mode": report.discovery_mode,
             "page_incomplete": report.page_incomplete,
             "validation_checked_count": report.validation_checked_count,
             "validation_deferred_count": report.validation_deferred_count,
@@ -486,7 +507,12 @@ def _persist_report_snapshot(report: SearchReport, path: Path, args: argparse.Na
             "validation_stopped_reason": report.validation_stopped_reason,
         },
     )
-    page = seed_initial_page(snapshot, initial_ids)
+    page = (
+        paginate_ranked_page(snapshot, None)
+        if report.discovery_mode else seed_initial_page(snapshot, initial_ids)
+    )
+    if report.discovery_mode and list(page.ids) != initial_ids:
+        raise SnapshotError("discovery first page does not match the frozen ranked pool")
     save_exclusive_path(path, page.snapshot)
     numbers = dict(page.snapshot.result_numbers)
     for result in report.results:
@@ -504,6 +530,8 @@ def _page(args: argparse.Namespace) -> int:
         raise ConfigurationError("--page-size must be 1-100")
     if args.extend_count is not None and not 1 <= args.extend_count <= 100:
         raise ConfigurationError("--extend-count must be 1-100")
+    if args.all and args.cursor:
+        raise ConfigurationError("--all cannot be combined with --cursor")
     _check_artifact_paths(args.report_file)
     progress = _progress_callback(args)
     with snapshot_writer_lock(args.report):
@@ -522,42 +550,56 @@ def _page(args: argparse.Namespace) -> int:
         records = thawed.get("result_records", {})
         cursor = args.cursor or next_safe_cursor(snapshot)
         emit_progress(progress, ProgressEvent("page_started", query=snapshot.query, status="started"))
+        discovery_mode = snapshot.options.get("mode") == "discovery"
+        if args.all and not discovery_mode:
+            raise SnapshotError("--all is available only for discovery snapshots")
         policy = NetworkPolicy.for_mode(bool(snapshot.options.get("thorough", False)))
-        parent_deadline = Deadline.start(policy)
-        validation_deadline = Deadline(
-            parent_deadline.started_at,
-            parent_deadline.collection_cutoff_at,
-            parent_deadline.validation_deadline(time.monotonic()),
-            parent_deadline.validation_cap_seconds,
-        )
         budget = RequestBudget(
             requests=policy.validation_requests,
             validation_requests=policy.validation_requests,
             github_api_requests=policy.github_api_requests,
         )
-        permits = PermitPool(policy)
-        transport = AnonymousPublicTransport()
-        target_cache = TargetResolutionCache()
-
-        def validate(candidate_id: str, frozen_record: dict[str, Any] | None) -> dict[str, Any]:
-            # Snapshot construction recursively freezes lists/mappings. Work
-            # from the already-thawed record, not a shallow dict of tuples.
-            record = records.get(candidate_id, {})
-            return validate_frozen_result_record(
-                candidate_id, record,
-                destinations=_snapshot_destinations(candidate_id, record),
-                transport=transport, resolver=public_resolver, budget=budget,
-                permits=permits, deadline=validation_deadline,
-                target_cache=target_cache,
+        validation_deadline: Deadline | None = None
+        if discovery_mode:
+            if args.all:
+                page = materialize_ranked_all(snapshot)
+            else:
+                page = (
+                    Page((), None, None, snapshot, is_exhausted=True)
+                    if cursor is None else paginate_ranked_page(snapshot, cursor, page_size=args.page_size)
+                )
+        else:
+            parent_deadline = Deadline.start(policy)
+            validation_deadline = Deadline(
+                parent_deadline.started_at,
+                parent_deadline.collection_cutoff_at,
+                parent_deadline.validation_deadline(time.monotonic()),
+                parent_deadline.validation_cap_seconds,
             )
+            permits = PermitPool(policy)
+            transport = AnonymousPublicTransport()
+            target_cache = TargetResolutionCache()
 
-        page = Page((), None, None, snapshot, is_exhausted=True) if cursor is None else materialize_page(
-            snapshot, cursor,
-            validate=validate,
-            page_size=args.page_size,
-            can_validate=lambda _identity, _record: validation_deadline.remaining() > 0
-            and budget.snapshot()["validation"]["used"] < policy.validation_requests,
-        )
+            def validate(candidate_id: str, frozen_record: dict[str, Any] | None) -> dict[str, Any]:
+                # Snapshot construction recursively freezes lists/mappings. Work
+                # from the already-thawed record, not a shallow dict of tuples.
+                record = records.get(candidate_id, {})
+                return validate_frozen_result_record(
+                    candidate_id, record,
+                    destinations=_snapshot_destinations(candidate_id, record),
+                    transport=transport, resolver=public_resolver, budget=budget,
+                    permits=permits, deadline=validation_deadline,
+                    target_cache=target_cache,
+                )
+
+            page = Page((), None, None, snapshot, is_exhausted=True) if cursor is None else materialize_page(
+                snapshot, cursor,
+                validate=validate,
+                page_size=args.page_size,
+                can_validate=lambda _identity, _record: validation_deadline is not None
+                and validation_deadline.remaining() > 0
+                and budget.snapshot()["validation"]["used"] < policy.validation_requests,
+            )
         update_snapshot(args.report, page.snapshot)
         state = snapshot_dict(page.snapshot)
     results = []
@@ -580,19 +622,22 @@ def _page(args: argparse.Namespace) -> int:
         args.page_size or page.snapshot.page_size,
         max(0, page.snapshot.requested_cap - materialized_before),
     )
-    scan_limited = (
+    scan_limited = not discovery_mode and (
         page.scanned_count >= MAX_PAGE_SCAN
         and not page.is_exhausted
         and len(results) < page_target
     )
-    page_incomplete = bool(results) and len(results) < page_target and (page.has_pending or scan_limited)
+    page_incomplete = not discovery_mode and bool(results) and len(results) < page_target and (page.has_pending or scan_limited)
     validation_budget = budget.snapshot().get("validation", {})
     validation_budget_reached = (
         type(validation_budget.get("used")) is int
         and type(validation_budget.get("limit")) is int
         and validation_budget["used"] >= validation_budget["limit"]
     )
-    if page.has_pending and validation_deadline.remaining() <= 0:
+    if discovery_mode:
+        validation_stop_reason = "deferred_to_inspect"
+        validation_stopped_reason = None
+    elif page.has_pending and validation_deadline is not None and validation_deadline.remaining() <= 0:
         validation_stop_reason = "deadline_reached"
         validation_stopped_reason = (
             f"{policy.validation_seconds:g}-second destination-verification deadline reached after final validation "
@@ -642,6 +687,7 @@ def _page(args: argparse.Namespace) -> int:
         "schema_version": SEARCH_REPORT_SCHEMA_VERSION,
         "report_format_version": REPORT_FORMAT_VERSION,
         "mode": "online",
+        "discovery_mode": discovery_mode,
         "continuation_page": True,
         "coverage_context": "saved" if coverage else "unavailable",
         "query": page.snapshot.query,
@@ -657,7 +703,7 @@ def _page(args: argparse.Namespace) -> int:
         "page_shown": len(results),
         "materialized_total": max(numbers, default=0),
         "requested_count": page.snapshot.requested_cap,
-        "page_size": args.page_size or page.snapshot.page_size,
+        "page_size": len(results) if args.all else args.page_size or page.snapshot.page_size,
         "can_explain": bool(page.snapshot.result_numbers),
         "installed_scan": state.get("inventory_evidence", {}),
         "provenance": metadata.get("provenance", {}),
@@ -668,8 +714,11 @@ def _page(args: argparse.Namespace) -> int:
                     "request_budget": budget.snapshot()},
         "validation_stopped_reason": validation_stopped_reason,
         "validation_stop_reason": validation_stop_reason,
-        "validation_checked_count": page.scanned_count,
-        "validation_deferred_count": validation_deferred_count,
+        "validation_checked_count": 0 if discovery_mode else page.scanned_count,
+        "validation_deferred_count": (
+            len(page.snapshot.ordered_pool) - statuses.count("eligible")
+            if discovery_mode else validation_deferred_count
+        ),
         "page_incomplete": page_incomplete,
         "pool_exhausted": page.is_exhausted,
         "has_pending": page.has_pending,
@@ -717,6 +766,68 @@ def _explain(args: argparse.Namespace) -> int:
     return 0
 
 
+def _inspect(args: argparse.Namespace) -> int:
+    """Validate one numbered discovery result without reopening retrieval."""
+    if args.result < 1:
+        raise ConfigurationError("--result must be a positive number")
+    with snapshot_writer_lock(args.report):
+        snapshot = load_snapshot(args.report)
+        record_view = resolve_materialized_result(snapshot, args.result)
+        identity = next(
+            candidate_id for candidate_id, number in snapshot.result_numbers.items()
+            if number == args.result
+        )
+        state = snapshot_dict(snapshot)
+        record = dict(state["result_records"].get(identity, record_view))
+        policy = NetworkPolicy.for_mode(bool(snapshot.options.get("thorough", False)))
+        parent_deadline = Deadline.start(policy)
+        validation_deadline = Deadline(
+            parent_deadline.started_at,
+            parent_deadline.collection_cutoff_at,
+            parent_deadline.validation_deadline(time.monotonic()),
+            parent_deadline.validation_cap_seconds,
+        )
+        budget = RequestBudget(
+            requests=policy.validation_requests,
+            validation_requests=policy.validation_requests,
+            github_api_requests=policy.github_api_requests,
+        )
+        outcome = validate_frozen_result_record(
+            identity, record,
+            destinations=_snapshot_destinations(identity, record),
+            transport=AnonymousPublicTransport(), resolver=public_resolver,
+            budget=budget, permits=PermitPool(policy), deadline=validation_deadline,
+            target_cache=TargetResolutionCache(),
+        )
+        snapshot = apply_validation_result(snapshot, identity, outcome)
+        update_snapshot(args.report, snapshot)
+        updated = snapshot_dict(snapshot)
+        inspected = dict(updated["result_records"][identity])
+        inspected["result_number"] = args.result
+    if args.json:
+        print(json.dumps({
+            "result": inspected,
+            "inspection": dict(outcome),
+            "snapshot": {"status": "saved", "path": str(args.report), "snapshot_id": snapshot.snapshot_id},
+        }, indent=2, ensure_ascii=False))
+    else:
+        print(render_inspection(
+            inspected, outcome, assistant=args.assistant,
+            format="markdown" if args.markdown else "plain",
+        ))
+    return 0
+
+
+def _details(args: argparse.Namespace) -> int:
+    snapshot = load_snapshot(args.report)
+    state = snapshot_dict(snapshot)
+    print(render_search_details(
+        state,
+        format="markdown" if args.markdown else "plain",
+    ))
+    return 0
+
+
 def _search(args: argparse.Namespace) -> int:
     started_at = time.monotonic()
     _resolve_search_args(args)
@@ -727,10 +838,11 @@ def _search(args: argparse.Namespace) -> int:
     config, cache = _load(args)
     report = UniversalSkillFinder(config, cache=cache).search(
         " ".join(args.query), limit=args.limit, max_results=args.max_results,
-        count=args.count, page_size=args.page_size, thorough=args.thorough,
+        count=None if args.legacy_max_results else args.count,
+        page_size=args.page_size, thorough=args.thorough,
         progress_callback=_progress_callback(args), preview=args.preview,
         source_ids=args.source, exclude_ids=args.exclude, offline=args.offline,
-        refresh=args.refresh, dry_run=args.dry_run,
+        refresh=args.refresh, dry_run=args.dry_run, verify_results=False,
     )
     inventory_started_at = time.monotonic()
     if args.assistant and not args.dry_run and not args.no_installed_check:
@@ -943,8 +1055,12 @@ def main(argv: list[str] | None = None) -> int:
             return 0
         if args.command == "page":
             return _page(args)
+        if args.command == "inspect":
+            return _inspect(args)
         if args.command == "explain":
             return _explain(args)
+        if args.command == "details":
+            return _details(args)
         if args.command in {"repositories", "sources"}:
             return _sources(args)
         if args.command == "packs":

@@ -132,22 +132,23 @@ def main() -> int:
         handoff = report["results"][0]["install"]
         check(handoff.get("kind") == "local" and Path(handoff["path"]).resolve() == fixture.resolve(), "local handoff lost identity")
         check(handoff.get("requires_approval") is True, "handoff lacks approval boundary")
-        markdown = run("pdf forms", "--source", "fixture", "--markdown", "--assistant", "codex", "--no-installed-check")
-        check("### 1." in markdown and "| Source | Search status | Candidates in pool | Globally shown | Enabled |" in markdown,
-              "verified cards or coverage table missing")
-        check(markdown.index("### 1.") < markdown.index("| Source | Search status | Candidates in pool | Globally shown | Enabled |"),
-              "verified cards must precede full coverage")
-        check("Searched" in markdown and "Not searched" in markdown, "source status indicators missing")
-        check("### 1. portable-pdf" in markdown and "Location:" in markdown,
-              "result identity/location fields missing")
-        check("Installation unavailable:" in markdown and "Inspect #1" in markdown
-              and "npx skills@" not in markdown
-              and "Found on:" in markdown and "Signals:" in markdown, "proof-gated fallback/signal fields missing")
-        card = markdown.split("### 1.", 1)[1].split("## Source coverage", 1)[0]
-        check("**What it does:**" not in card and "\n---\n" not in card
+        snapshot = work / "search-snapshot.json"
+        markdown = run(
+            "pdf forms", "--source", "fixture", "--markdown", "--assistant", "codex",
+            "--no-installed-check", "--report-json", str(snapshot),
+        )
+        check("**1 unique candidate**" in markdown and "1. portable-pdf · portable-pdf" in markdown,
+              "compact discovery result missing")
+        check("fixture · Fill PDF forms" in markdown and "Inspect #N" in markdown
+              and "npx skills@" not in markdown, "compact discovery fields or action missing")
+        check("## Source coverage" not in markdown and "\n---\n" not in markdown
               and "<details" not in markdown, "default search is not compact terminal output")
+        details = run("details", "--report", str(snapshot), "--markdown")
+        check("| Source | Search status | Candidates in pool | Globally shown | Enabled |" in details,
+              "saved search details are missing source coverage")
+        check("Searched" in details and "Not searched" in details, "source status indicators missing")
         plain = run("pdf forms", "--source", "fixture", "--assistant", "codex", "--no-installed-check")
-        check("1. portable-pdf" in plain and "Location:" in plain and "Installation unavailable:" in plain
+        check("1. portable-pdf ; portable-pdf" in plain and "fixture ; Fill PDF forms" in plain
               and "<!doctype" not in plain and "```" not in plain, "plain CLI compact output missing")
         html_report = run("pdf forms", "--source", "fixture", "--html", "--assistant", "codex", "--no-installed-check")
         check(html_report.lower().startswith("<!doctype html>") and "<details" in html_report
@@ -155,7 +156,7 @@ def main() -> int:
               "copied skill collapsible HTML report missing")
         check("Not ready:" in html_report and "npx skills@" not in html_report,
               "HTML report bypassed the exact installer proof gate")
-    print("Release smoke passed: manifests, links, portable license, copied provenance/preflight/launchers, editable source config, source aliases, example registry pack, verified card search, exact handoff.")
+    print("Release smoke passed: manifests, links, portable license, copied provenance/preflight/launchers, editable source config, source aliases, example registry pack, compact discovery search, saved details, exact handoff.")
     return 0
 
 

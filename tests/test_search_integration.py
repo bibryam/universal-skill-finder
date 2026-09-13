@@ -93,7 +93,10 @@ class SearchIntegrationTests(unittest.TestCase):
         self.assertNotIn("npx skills@", text)
         self.assertIn("## Source coverage", text)
         self.assertIn("[https://github.com/bibryam/universal-skill-finder](https://github.com/bibryam/universal-skill-finder)", text)
-        self.assertEqual(search.call_args.kwargs["max_results"], 10)
+        self.assertEqual(search.call_args.kwargs["max_results"], 100)
+        self.assertEqual(search.call_args.kwargs["count"], 100)
+        self.assertEqual(search.call_args.kwargs["page_size"], 25)
+        self.assertFalse(search.call_args.kwargs["verify_results"])
         self.assertEqual(search.call_args.kwargs["source_ids"], [])
 
     def test_installed_labels_are_fixed_keep_commands_and_do_not_render_paths(self):
