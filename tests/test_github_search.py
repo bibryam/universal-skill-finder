@@ -214,6 +214,17 @@ class GitHubSearchTests(unittest.TestCase):
             self.assertGreater(options["timeout"], 0)
             self.assertLessEqual(options["timeout"], MAX_SECONDS)
 
+    def test_request_timeout_clamps_floating_point_overshoot(self):
+        # (12.072 + 20.0) - 12.072 rounds above 20.0 on IEEE-754 doubles.
+        http = PayloadHttp([row()])
+        with patch("universal_skill_finder.adapters.github_search.time.monotonic", return_value=12.072):
+            results, _context = self.search(http)
+        self.assertEqual(len(results), 1)
+        self.assertTrue(http.calls)
+        self.assertTrue(all(
+            0 < options["timeout"] <= MAX_SECONDS for _method, _url, options in http.calls
+        ))
+
     def test_visibility_change_cannot_use_token_to_fetch_now_private_content(self):
         item = row()
         for status in (403, 404):
