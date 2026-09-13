@@ -56,8 +56,8 @@ class EmptySearchDiagnosticsTests(unittest.TestCase):
 
     def test_coverage_header_has_five_explicit_columns(self):
         text = render_report(blocked_report())
-        self.assertIn("| Source | Search status | Candidates returned | Shown | Enabled |", text)
-        self.assertNotIn("| Source | Search status | Candidates returned | Shown | Enabled | |", text)
+        self.assertIn("| Source | Search status | Candidates in pool | Globally shown | Enabled |", text)
+        self.assertNotIn("| Source | Search status | Candidates in pool | Globally shown | Enabled | |", text)
 
     def test_validation_progress_counts_verified_destinations_not_attempts(self):
         event = SimpleNamespace(type="validation_finished", completed=0, total=39)

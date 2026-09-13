@@ -314,6 +314,11 @@ class SearchReport:
     unavailable_count: int = 0
     inconclusive_count: int = 0
     not_checked_count: int = 0
+    validation_checked_count: int = 0
+    validation_deferred_count: int = 0
+    validation_stop_reason: str | None = None
+    validation_stopped_reason: str | None = None
+    page_incomplete: bool = False
     page_start: int = 0
     page_shown: int = 0
     materialized_total: int = 0
@@ -346,6 +351,11 @@ class SearchReport:
             "unavailable_count": self.unavailable_count,
             "inconclusive_count": self.inconclusive_count,
             "not_checked_count": self.not_checked_count,
+            "validation_checked_count": self.validation_checked_count,
+            "validation_deferred_count": self.validation_deferred_count,
+            "validation_stop_reason": self.validation_stop_reason,
+            "validation_stopped_reason": self.validation_stopped_reason,
+            "page_incomplete": self.page_incomplete,
             "page_start": self.page_start,
             "page_shown": self.page_shown,
             "materialized_total": self.materialized_total,

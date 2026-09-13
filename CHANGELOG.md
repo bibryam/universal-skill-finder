@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## 0.1.4 - 2026-09-13
+
+- Mark destination-verification underfill as an incomplete page and report the bounded stop reason plus checked and deferred candidate counts.
+- Rename source coverage columns to distinguish bounded candidates in the global pool from results shown after merging, ranking, and destination verification.
+
 ## 0.1.3 - 2026-09-12
 
 - Stop repository and local catalogue searches from padding short result sets with zero-relevance skills; separator-only spellings such as `anti-slop` and `antislop` now match consistently.

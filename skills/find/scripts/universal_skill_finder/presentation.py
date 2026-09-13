@@ -858,7 +858,7 @@ def _coverage_status_v2(item: object) -> str:
 
 def _coverage_table(report: object) -> list[str]:
     rows = _coverage_rows(report)
-    lines = ["## Source coverage", "", "| Source | Search status | Candidates returned | Shown | Enabled |", "|---|---|---:|---:|---|"]
+    lines = ["## Source coverage", "", "| Source | Search status | Candidates in pool | Globally shown | Enabled |", "|---|---|---:|---:|---|"]
     for item in rows:
         source = _text(_value(item, "source_id", "unknown"), 120)
         proof = _value(item, "link_proof", _value(item, "public_link"))
@@ -871,8 +871,13 @@ def _coverage_table(report: object) -> list[str]:
         shown_text = str(shown) if type(shown) is int and shown >= 0 else "0"
         enabled = "✅ Enabled" if _value(item, "enabled", True) else "❌ Disabled"
         lines.append(f"| {source} | {status} | {count} | {shown_text} | {enabled} |")
-    if len(rows) > 1:
-        lines.extend(["", "Shown counts unique results on this page per source and are not additive for merged results."])
+    if rows:
+        lines.extend([
+            "",
+            "The Candidates in pool column is the bounded number this source contributed, not the source's total matches. "
+            "Globally shown counts unique results on this page after merging, global ranking, and destination verification; "
+            "merged results can count for multiple sources, so this column is not additive.",
+        ])
     return lines
 
 
@@ -917,6 +922,7 @@ def _summary_data(report: object, results: list[object]) -> dict[str, object]:
     verification_all_zero = unique > 0 and current == 0 and checks["eligible"] == 0 and (
         checks["inconclusive"] > 0 or checks["not_checked"] > 0 or sum(checks.values()) == 0
     )
+    page_incomplete = _value(report, "page_incomplete", False) is True
     return {
         "accepted": accepted, "unique": unique, "merged": merged, "checks": checks,
         "current": current, "cumulative": cumulative, "page_range": page_range,
@@ -924,6 +930,7 @@ def _summary_data(report: object, results: list[object]) -> dict[str, object]:
         "searched": searched, "cached": cached, "not_searched": not_searched,
         "failed": failed, "partial_sources": partial_sources,
         "coverage_unavailable": str(_value(report, "coverage_context", "")) == "unavailable" and not coverage,
+        "page_incomplete": page_incomplete,
         "partial": bool(failed or partial_sources or verification_all_zero),
     }
 
@@ -939,14 +946,19 @@ def _summary_header(report: object, results: list[object], summary: Mapping[str,
     query = _text(_value(report, "query", ""), 400)
     current = int(data["current"])
     if _is_continuation_page(report):
+        result_line = f"**{_counted(int(data['unique']), 'saved skill')}** · **{current} shown** · **no new search**"
+        if data["page_incomplete"]:
+            result_line += " · **incomplete page**"
         return "\n".join([
             f"Search: **{query}**",
             "",
-            f"**{_counted(int(data['unique']), 'saved skill')}** · **{current} shown** · **no new search**",
+            result_line,
         ])
     result_line = f"**{_counted(int(data['unique']), 'candidate')}** · **{current} shown**"
     if data["partial"]:
         result_line += " · **partial**"
+    if data["page_incomplete"]:
+        result_line += " · **incomplete page**"
     return "\n".join([
         f"Search: **{query}**",
         "",
@@ -968,8 +980,22 @@ def _summary_notes(report: object, results: list[object], summary: Mapping[str, 
          f"{checks['unavailable']} unavailable · {checks['inconclusive']} inconclusive · "
          f"{checks['not_checked']} not checked."),
         "- Page: " + _page_position_line(data["page_range"], data["current"], data["cumulative"]) + ".",
-        f"- Requested up to {data['requested']} results · Page size {data['page_size']}.",
+        f"- Requested up to {data['requested']} results · Page size: up to {data['page_size']} verified results.",
     ]
+    if data["page_incomplete"]:
+        reason = _text(_value(report, "validation_stopped_reason", "destination verification stopped early"), 300)
+        deferred = _value(report, "validation_deferred_count", _value(report, "not_checked_count", 0))
+        if type(deferred) is int and deferred >= 0:
+            lines.append(f"- Incomplete page: {reason}; {deferred} candidates were deferred.")
+            completed_without_destination = max(0, int(checks["not_checked"]) - deferred)
+            if completed_without_destination:
+                lines.append(
+                    f"- Completed without a checked destination: {completed_without_destination} "
+                    f"{'candidate' if completed_without_destination == 1 else 'candidates'}; "
+                    "included in the not-checked total above."
+                )
+        else:
+            lines.append(f"- Incomplete page: {reason}.")
     if data["coverage_unavailable"]:
         lines.append("- Source coverage: unavailable in this older snapshot.")
     else:
@@ -1053,6 +1079,8 @@ def _actions(report: object, results: list[object]) -> list[str]:
     lines.append("Say **Inspect #N**, **Install #N**, or **List sources**.")
     if _value(report, "can_explain", False):
         lines.append("Explain #N is available from this saved snapshot.")
+    if _value(report, "page_incomplete", False) is True:
+        lines.append("Continue the saved snapshot to check deferred candidates and fill the requested page where possible.")
     continuation = _value(report, "continuation", _value(report, "continuation_available", False))
     if continuation is True or _value(continuation, "available", False):
         lines.append("Next page is available from this saved snapshot.")
@@ -1336,9 +1364,13 @@ def _html_coverage(report: object, *, links: bool = True) -> str:
         body.append("<tr><td>" + source_value + "</td><td>" + _html_existing_text(status) + "</td><td>" + count_value + "</td><td>" + (str(shown) if type(shown) is int and shown >= 0 else "0") + "</td><td>" + ("Enabled" if _value(item, "enabled", True) else "Disabled") + "</td></tr>")
     if not body:
         return "<p class=\"muted\">Source coverage unavailable.</p>"
-    suffix = ("<p class=\"muted\">Shown counts unique results on this page per source and are not additive for merged results.</p>"
-              if len(rows) > 1 else "")
-    return "<table><thead><tr><th>Source</th><th>Search status</th><th>Candidates returned</th><th>Shown</th><th>Enabled</th></tr></thead><tbody>" + "".join(body) + "</tbody></table>" + suffix
+    suffix = (
+        "<p class=\"muted\">The Candidates in pool column is the bounded number this source contributed, not the source's total matches. "
+        "Globally shown counts unique results on this page after merging, global ranking, and destination verification; "
+        "merged results can count for multiple sources, so this column is not additive.</p>"
+        if rows else ""
+    )
+    return "<table><thead><tr><th>Source</th><th>Search status</th><th>Candidates in pool</th><th>Globally shown</th><th>Enabled</th></tr></thead><tbody>" + "".join(body) + "</tbody></table>" + suffix
 
 
 def _html_notes(report: object, results: list[object]) -> str:
@@ -1379,6 +1411,8 @@ def _html_summary_header(report: object, results: list[object], summary: Mapping
         ]
     if summary["partial"]:
         parts.append(strong("partial"))
+    if summary["page_incomplete"]:
+        parts.append(strong("incomplete page"))
     return '<p class="summary">' + " · ".join(parts) + "</p>"
 
 

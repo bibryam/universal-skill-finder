@@ -153,7 +153,9 @@ def _thaw_json(value: Any) -> Any:
 
 _REPORT_METADATA_FIELDS = frozenset({
     "coverage", "accepted_occurrences", "unique_count", "merged_duplicates",
-    "timings", "mode", "warnings", "provenance", "notes",
+    "timings", "mode", "warnings", "provenance", "notes", "page_incomplete",
+    "validation_checked_count", "validation_deferred_count", "validation_stop_reason",
+    "validation_stopped_reason",
 })
 
 

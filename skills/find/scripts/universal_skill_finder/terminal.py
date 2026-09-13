@@ -25,7 +25,7 @@ _LABEL = re.compile(
 )
 _RED_MARKER = re.compile(r"\b(Not ready|Failed|Unavailable|inconclusive|not checked)\b", re.IGNORECASE)
 _AMBER_MARKER = re.compile(
-    r"\b(Warning|Partial(?: search| cached)?|Cached|listings? not verified)\b", re.IGNORECASE
+    r"\b(Warning|Partial(?: search| cached)?|Incomplete page|Cached|listings? not verified)\b", re.IGNORECASE
 )
 _COMMAND = re.compile(r"^\s*(?:npx\s+skills@|npm\s|pnpm\s|yarn\s|uvx\s|python(?:3)?\s|git\s|curl\s)")
 

@@ -35,6 +35,10 @@ class FirstPageAccountingTests(unittest.TestCase):
             requested_count=10, page_size=10, accepted_occurrences=31, unique_count=31,
             eligible_count=10, inconclusive_count=21, page_start=1, page_shown=10,
             materialized_total=10,
+            validation_checked_count=30, validation_deferred_count=1,
+            validation_stop_reason="scan_limit_reached",
+            validation_stopped_reason="30-candidate destination-verification scan limit reached",
+            page_incomplete=False,
         )
         report.snapshot = {
             "ordered_pool": [row.id for row in pool],
@@ -54,6 +58,13 @@ class FirstPageAccountingTests(unittest.TestCase):
         self.assertEqual(report.coverage[1].shown, 1)
         self.assertEqual(sum("late" in row.source_ids for row in report.results), 1)
         self.assertEqual(dict(saved.result_numbers)[pool[30].id], 10)
+        self.assertEqual(saved.report_metadata["validation_checked_count"], 30)
+        self.assertEqual(saved.report_metadata["validation_deferred_count"], 1)
+        self.assertEqual(saved.report_metadata["validation_stop_reason"], "scan_limit_reached")
+        self.assertEqual(
+            saved.report_metadata["validation_stopped_reason"],
+            "30-candidate destination-verification scan limit reached",
+        )
 
     def test_metadata_uses_retained_safe_cards_not_a_pre_filter_coverage_count(self):
         safe = result(id="skill:safe", validation_status="eligible", source_ids=["safe"])

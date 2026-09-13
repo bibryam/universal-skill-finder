@@ -119,7 +119,7 @@ npx skills@1.5.23 add https://github.com/anthropics/skills/tree/main/skills/pdf 
 
 Say **“Inspect #1”** to review a result or **“Install #1”** to request installation. Searching never runs the installer, and installation requires your approval. GitHub skill installations use the separate [Skills CLI](https://github.com/vercel-labs/skills/tree/v1.5.23), with the requirements listed above.
 
-Say **“Next page”** or **“Show more”** to continue the saved search without rerunning sources. Numbering stays stable; Show more can raise the overall cap to 100 using the original candidate pool. For direct CLI use, `--count N` controls the overall cap, `--page-size N` controls page size, and `--report-json` saves the snapshot needed for continuation.
+Say **“Next page”** or **“Show more”** to continue the saved search without rerunning sources. Numbering stays stable; Show more can raise the overall cap to 100 using the original candidate pool. Page size is an upper bound on verified results. If the verification deadline, request budget, or 30-candidate scan limit stops an underfilled page, the report labels it **incomplete page**, explains the stop, and gives the deferred count. For direct CLI use, `--count N` controls the overall cap, `--page-size N` controls page size, and `--report-json` saves the snapshot needed for continuation.
 
 <details>
 <summary>How to read signals and installed-skill labels</summary>
