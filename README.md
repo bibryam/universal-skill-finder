@@ -93,6 +93,8 @@ By default, Universal Skill Finder searches every enabled source in parallel, re
 
 In other agents, ask “Use Universal Skill Finder to find skills for PDF forms” or use the skill picker. Search works across compatible agents; generated installation commands and installed-skill checks currently support Codex and Claude Code. Other agents receive links to inspect.
 
+![Universal Skill Finder video editor search results in Claude Code (left) and Codex (right)](docs/images/search-claude-code-codex.png)
+
 ### From a result to an installation
 
 Reports stay in your terminal or agent conversation. The default page is deliberately dense: one summary followed by two lines per result. The first line contains the linked name and reported path; the second contains provenance, one source-native metric when available, and a short description. Detailed source coverage is available through **Search details**. Direct CLI output adds color on supported interactive terminals; `NO_COLOR` disables it, and saved or redirected output has no ANSI codes. A browser report is available only if you explicitly ask for HTML.
